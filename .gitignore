@@ -73,3 +73,7 @@ datasets
 
 # Mimic
 *.npz
+
+# Include vendored Unitree model assets
+!unitree_model/
+!unitree_model/**
