@@ -19,7 +19,7 @@ def format_value(x):
         return x
 
 
-def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir):
+def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir, observation_group_names: list[str] | None = None):
     asset: Articulation = env.scene["robot"]
     joint_sdk_names = env.cfg.scene.robot.joint_sdk_names
     joint_ids_map, _ = resolve_matching_names(asset.data.joint_names, joint_sdk_names, preserve_order=True)
@@ -80,31 +80,44 @@ def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir):
             cfg["actions"][action_name]["joint_ids"] = action_term._joint_ids
 
     # --- observations ---
-    obs_names = env.observation_manager.active_terms["policy"]
-    obs_cfgs = env.observation_manager._group_obs_term_cfgs["policy"]
-    obs_terms = zip(obs_names, obs_cfgs)
-    cfg["observations"] = {}
-    for obs_name, obs_cfg in obs_terms:
-        obs_dims = tuple(obs_cfg.func(env, **obs_cfg.params).shape)
-        term_cfg = obs_cfg.copy()
-        if term_cfg.scale is not None:
-            scale = term_cfg.scale.detach().cpu().numpy().tolist()
-            if isinstance(scale, float):
-                term_cfg.scale = [scale for _ in range(obs_dims[1])]
+    export_group_metadata = observation_group_names is not None
+    if observation_group_names is None:
+        observation_group_names = ["policy"]
+    if export_group_metadata:
+        cfg["observation_groups"] = list(observation_group_names)
+        cfg["observations"] = {group_name: {} for group_name in observation_group_names}
+    else:
+        cfg["observations"] = {}
+    for group_name in observation_group_names:
+        obs_names = env.observation_manager.active_terms[group_name]
+        obs_cfgs = env.observation_manager._group_obs_term_cfgs[group_name]
+        exported_group = cfg["observations"][group_name] if export_group_metadata else cfg["observations"]
+        if export_group_metadata and any(
+            obs_cfg.history_length > 0 and not obs_cfg.flatten_history_dim for obs_cfg in obs_cfgs
+        ):
+            # Match Isaac Lab's [history, concatenated terms] layout in the C++ deployment manager.
+            exported_group["use_gym_history"] = True
+        for obs_name, obs_cfg in zip(obs_names, obs_cfgs):
+            obs_dims = tuple(obs_cfg.func(env, **obs_cfg.params).shape)
+            term_cfg = obs_cfg.copy()
+            if term_cfg.scale is not None:
+                scale = term_cfg.scale.detach().cpu().numpy().tolist()
+                if isinstance(scale, float):
+                    term_cfg.scale = [scale for _ in range(obs_dims[1])]
+                else:
+                    term_cfg.scale = scale
             else:
-                term_cfg.scale = scale
-        else:
-            term_cfg.scale = [1.0 for _ in range(obs_dims[1])]
-        if term_cfg.clip is not None:
-            term_cfg.clip = list(term_cfg.clip)
-        if term_cfg.history_length == 0:
-            term_cfg.history_length = 1
+                term_cfg.scale = [1.0 for _ in range(obs_dims[1])]
+            if term_cfg.clip is not None:
+                term_cfg.clip = list(term_cfg.clip)
+            if term_cfg.history_length == 0:
+                term_cfg.history_length = 1
 
-        # clean cfg
-        term_cfg = term_cfg.to_dict()
-        for _ in ["func", "modifiers", "noise", "flatten_history_dim"]:
-            del term_cfg[_]
-        cfg["observations"][obs_name] = term_cfg
+            # clean cfg
+            term_cfg = term_cfg.to_dict()
+            for _ in ["func", "modifiers", "noise", "flatten_history_dim"]:
+                del term_cfg[_]
+            exported_group[obs_name] = term_cfg
 
     # --- save config file ---
     filename = os.path.join(log_dir, "params", "deploy.yaml")

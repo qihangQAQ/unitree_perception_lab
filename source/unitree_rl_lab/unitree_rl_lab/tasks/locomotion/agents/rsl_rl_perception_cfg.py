@@ -51,8 +51,10 @@ class UnitreePerceptionRunnerCfg(RslRlOnPolicyRunnerCfg):
     # Basic training parameters (consistent with original PPO)
     num_steps_per_env = 24
     max_iterations = 10000
-    save_interval = 100
+    save_interval = 500
+    experiment_name = "Unitree-Velocity_perception" 
     empirical_normalization = False
+    obs_groups = {"policy": ["policy"], "critic": ["critic"]}
 
     # Policy configuration with LSTM (aligned with LeggedLab G1Rough)
     policy = RslRlPerceptionActorCriticCfg(

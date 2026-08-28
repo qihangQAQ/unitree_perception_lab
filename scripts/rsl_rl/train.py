@@ -8,21 +8,8 @@
 """Launch Isaac Sim Simulator first."""
 
 
-import gymnasium as gym
-import pathlib
-import sys
-
-sys.path.insert(0, f"{pathlib.Path(__file__).parent.parent}")
-from list_envs import import_packages  # noqa: F401
-
-sys.path.pop(0)
-
-tasks = []
-for task_spec in gym.registry.values():
-    if "Unitree" in task_spec.id and "Isaac" not in task_spec.id:
-        tasks.append(task_spec.id)
-
 import argparse
+import sys
 
 import argcomplete
 
@@ -37,7 +24,7 @@ parser.add_argument("--video", action="store_true", default=False, help="Record 
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
-parser.add_argument("--task", type=str, default=None, choices=tasks, help="Name of the task.")
+parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
@@ -92,7 +79,8 @@ import shutil
 import torch
 from datetime import datetime
 
-from rsl_rl.runners import OnPolicyRunner  # TODO: Consider printing the experiment name in the terminal.
+import rsl_rl.runners as rsl_rl_runners
+from rsl_rl.utils import string_to_callable
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab.envs import (
@@ -115,6 +103,16 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
+
+
+def _resolve_runner_class(class_name: str):
+    """Resolve standard RSL-RL runners and repository-local ``module:class`` runners."""
+    if ":" in class_name:
+        return string_to_callable(class_name)
+    runner_class = getattr(rsl_rl_runners, class_name, None)
+    if runner_class is None:
+        raise ValueError(f"Unsupported runner class: {class_name}")
+    return runner_class
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
@@ -180,8 +178,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    # create runner from rsl-rl
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+    # create runner from rsl-rl or a repository-local extension
+    runner_class = _resolve_runner_class(getattr(agent_cfg, "class_name", "OnPolicyRunner"))
+    runner = runner_class(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
@@ -193,7 +192,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
-    export_deploy_cfg(env.unwrapped, log_dir)
+    policy_observation_groups = agent_cfg.obs_groups["policy"]
+    if len(policy_observation_groups) > 1:
+        export_deploy_cfg(
+            env.unwrapped,
+            log_dir,
+            observation_group_names=policy_observation_groups,
+        )
+    else:
+        export_deploy_cfg(env.unwrapped, log_dir)
     # copy the environment configuration file to the log directory
     shutil.copy(
         inspect.getfile(env_cfg.__class__),

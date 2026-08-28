@@ -11,8 +11,122 @@ from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import ContactSensor
 
+from .commands.velocity_command import terrain_type_mask
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
+    from unitree_rl_lab.sensors import VolumePoints
+
+
+def delta_yaw_reward(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Penalize large yaw-rate tracking errors using the Noetix thresholding rule."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command("base_velocity")
+    speed_yaw = asset.data.root_ang_vel_w[:, 2]
+    command_speed_yaw = command[:, 2]
+    delta_speed = torch.abs(speed_yaw - command_speed_yaw)
+    absolute_command = torch.abs(command_speed_yaw)
+    punish = delta_speed * (delta_speed > 0.1) * (delta_speed > 0.5 * absolute_command)
+    return punish
+
+
+def volume_points_penetration(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    tolerance: float = 0.0,
+    terrain_types: tuple[str, ...] | None = None,
+) -> torch.Tensor:
+    """Penalize moving body-volume points that penetrate inflated terrain edges."""
+    volume_sensor: VolumePoints = env.scene.sensors[sensor_cfg.name]
+    penetration = volume_sensor.data.penetration_offset.flatten(1, 2)
+    penetration_depth = torch.norm(penetration, dim=-1)
+    in_obstacle = (penetration_depth > tolerance).float()
+    point_speed = torch.norm(volume_sensor.data.points_vel_w.flatten(1, 2), dim=-1)
+    penalty = torch.sum(in_obstacle * (point_speed + 1.0e-6) * penetration_depth, dim=-1)
+
+    if terrain_types:
+        penalty *= terrain_type_mask(env, terrain_types)
+    return penalty
+
+
+def stairs_outward_progress_reward(
+    env: ManagerBasedRLEnv,
+    terrain_types: tuple[str, ...],
+    min_forward_command: float = 0.1,
+    cap_by_command: bool = True,
+    max_outward_speed: float = 1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward planar velocity directed away from a stair tile's center platform."""
+    if min_forward_command < 0.0:
+        raise ValueError(
+            "min_forward_command must be non-negative, got "
+            f"{min_forward_command}."
+        )
+    if max_outward_speed <= 0.0:
+        raise ValueError(
+            f"max_outward_speed must be positive, got {max_outward_speed}."
+        )
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command("base_velocity")
+    active = terrain_type_mask(env, terrain_types) & (
+        command[:, 0] > float(min_forward_command)
+    )
+
+    local_xy = asset.data.root_pos_w[:, :2] - env.scene.env_origins[:, :2]
+    radial_distance = torch.linalg.vector_norm(local_xy, dim=1, keepdim=True)
+    outward_direction = local_xy / radial_distance.clamp_min(1.0e-6)
+    outward_speed = torch.sum(
+        asset.data.root_lin_vel_w[:, :2] * outward_direction, dim=1
+    ).clamp_min(0.0)
+
+    speed_cap = torch.full_like(outward_speed, float(max_outward_speed))
+    if cap_by_command:
+        speed_cap = torch.minimum(speed_cap, command[:, 0].clamp_min(0.0))
+    reward = torch.minimum(outward_speed, speed_cap)
+    return reward * active.float()
+
+
+def stairs_stall_penalty(
+    env: ManagerBasedRLEnv,
+    terrain_types: tuple[str, ...],
+    min_forward_command: float = 0.1,
+    min_outward_speed: float = 0.05,
+    grace_steps: int = 50,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize complete stalls on stairs without command-speed tracking."""
+    if min_forward_command < 0.0:
+        raise ValueError(
+            "min_forward_command must be non-negative, got "
+            f"{min_forward_command}."
+        )
+    if min_outward_speed < 0.0:
+        raise ValueError(
+            f"min_outward_speed must be non-negative, got {min_outward_speed}."
+        )
+    if grace_steps < 0:
+        raise ValueError(f"grace_steps must be non-negative, got {grace_steps}.")
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    command = env.command_manager.get_command("base_velocity")
+    local_xy = asset.data.root_pos_w[:, :2] - env.scene.env_origins[:, :2]
+    outward_direction = local_xy / torch.linalg.vector_norm(
+        local_xy, dim=1, keepdim=True
+    ).clamp_min(1.0e-6)
+    outward_speed = torch.sum(
+        asset.data.root_lin_vel_w[:, :2] * outward_direction, dim=1
+    )
+    active = (
+        terrain_type_mask(env, terrain_types)
+        & (command[:, 0] > float(min_forward_command))
+        & (env.episode_length_buf >= int(grace_steps))
+    )
+    return (active & (outward_speed < float(min_outward_speed))).float()
+
 
 """
 Joint penalties.
@@ -298,6 +412,21 @@ def body_force(
     reward[reward > threshold] -= threshold
     reward = reward.clamp(min=0, max=max_reward)
     return reward
+
+
+def feet_contact_force_penalty(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    threshold: float = 500.0,
+    max_excess: float = 400.0,
+) -> torch.Tensor:
+    """Penalize excessive foot contact forces."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    force_mag = torch.norm(
+        contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, :], dim=-1
+    )
+    excess = torch.clamp(force_mag - threshold, min=0.0, max=max_excess)
+    return torch.sum(excess, dim=1) / max_excess
 
 
 def feet_too_near_humanoid(

@@ -400,7 +400,9 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
 class RobotPlayEnvCfg(RobotEnvCfg):
     def __post_init__(self):
         super().__post_init__()
+        # Keep fall/contact terminations, but remove play-only disturbances and episode time limits.
+        self.events.base_external_force_torque = None
+        self.events.push_robot = None
+        self.terminations.time_out = None
+
         self.scene.num_envs = 32
-        self.scene.terrain.terrain_generator.num_rows = 2
-        self.scene.terrain.terrain_generator.num_cols = 10
-        self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges

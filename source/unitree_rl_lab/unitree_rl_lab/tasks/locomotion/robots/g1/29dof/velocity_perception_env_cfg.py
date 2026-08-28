@@ -1,5 +1,3 @@
-import math
-
 import isaaclab.sim as sim_utils
 import isaaclab.terrains as terrain_gen
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
@@ -18,7 +16,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
+from unitree_rl_lab.assets.robots.unitree import G1_CFG as ROBOT_CFG
 from unitree_rl_lab.tasks.locomotion import mdp
 from unitree_rl_lab.tasks.fdm.mdp.terrains import (
     MeshPillarTerrainCfg,
@@ -26,6 +24,7 @@ from unitree_rl_lab.tasks.fdm.mdp.terrains import (
     StairsRampEvalTerrainCfg,
 )
 from unitree_rl_lab.tasks.fdm.mdp.terrains.single_object import cross_object_pattern
+from unitree_rl_lab.terrains import UPGRADE_TERRAIN1
 
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
@@ -123,8 +122,8 @@ class RobotSceneCfg(InteractiveSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",  # "plane", "generator"
-        terrain_generator=ROUGH_TERRAINS_CFG,  # None, COBBLESTONE_ROAD_CFG
-        max_init_terrain_level=5,  # 初始从中间难度开始，ROUGH_TERRAINS_CFG有10个等级
+        terrain_generator=UPGRADE_TERRAIN1,
+        max_init_terrain_level=2,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -150,6 +149,22 @@ class RobotSceneCfg(InteractiveSceneCfg):
         ray_alignment="yaw",
         pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=[1.6, 1.0]),
         debug_vis=True,
+        mesh_prim_paths=["/World/ground"],
+    )
+    left_foot_height_scanner = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/left_ankle_roll_link",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.025, 0.0, -0.05)),
+        ray_alignment="yaw",
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.20, 0.05]),
+        debug_vis=False,
+        mesh_prim_paths=["/World/ground"],
+    )
+    right_foot_height_scanner = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/right_ankle_roll_link",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.025, 0.0, -0.05)),
+        ray_alignment="yaw",
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.05, size=[0.20, 0.05]),
+        debug_vis=False,
         mesh_prim_paths=["/World/ground"],
     )
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
@@ -190,6 +205,11 @@ class EventCfg:
         },
     )
 
+    clear_privileged_property_cache = EventTerm(
+        func=mdp.clear_privileged_property_cache,
+        mode="startup",
+    )
+
     # reset
     reset_base = EventTerm(
         func=mdp.reset_root_state_uniform,
@@ -227,37 +247,28 @@ class EventCfg:
 
 @configclass
 class CommandsCfg:
-    """Command specifications for the MDP."""
+    """Terrain-aware velocity commands with independent per-axis zeroing."""
 
-    # base_velocity = mdp.UniformLevelVelocityCommandCfg(
-    #     asset_name="robot",
-    #     resampling_time_range=(10.0, 10.0),
-    #     rel_standing_envs=0.02,
-    #     rel_heading_envs=1.0,
-    #     heading_command=False,
-    #     debug_vis=True,
-    #     ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-    #         lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.1, 0.1),
-    #     ),
-    #     limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-    #         lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.5, 0.5),
-    #     ),
-    # )
-
-    base_velocity = mdp.UniformVelocityCommandCfg(
+    base_velocity = mdp.TerrainAwareUniformVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
         rel_standing_envs=0.2,
-        rel_heading_envs=1.0,
-        heading_command=True,
-        heading_control_stiffness=0.5,
+        heading_command=False,
         debug_vis=True,
-        ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.6, 1.0),
+        ranges=mdp.TerrainAwareUniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(-0.6, 1.5),
             lin_vel_y=(-0.5, 0.5),
-            ang_vel_z=(-1.57, 1.57),
-            heading=(-math.pi, math.pi),
+            ang_vel_z=(-1.0, 1.0),
+            zero_prob=(0.4, 0.8, 0.4),
         ),
+        terrain_specific_ranges={
+            "flat": mdp.TerrainAwareUniformVelocityCommandCfg.Ranges(
+                lin_vel_x=(-0.6, 2.0),
+                lin_vel_y=(-0.5, 0.5),
+                ang_vel_z=(-1.0, 1.0),
+                zero_prob=(0.4, 0.8, 0.4),
+            )
+        },
     )
 
 
@@ -314,7 +325,7 @@ class ObservationsCfg:
 
     @configclass
     class CriticCfg(ObsGroup):
-        """Observations for critic group."""
+        """Clean privileged observations for the value network."""
 
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0)
@@ -323,6 +334,32 @@ class ObservationsCfg:
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=1.0)
         last_action = ObsTerm(func=mdp.last_action)
+        payload = ObsTerm(
+            func=mdp.payload,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
+            },
+            scale=0.2,
+        )
+        left_foot_material = ObsTerm(
+            func=mdp.material_properties,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot", body_names="left_ankle_roll_link"
+                ),
+            },
+        )
+        right_foot_material = ObsTerm(
+            func=mdp.material_properties,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot", body_names="right_ankle_roll_link"
+                ),
+            },
+        )
+        kp_params = ObsTerm(func=mdp.kp_params, scale=0.005)
+        kd_params = ObsTerm(func=mdp.kd_params, scale=0.05)
+        effort_limit = ObsTerm(func=mdp.effort_limit, scale=0.01)
         feet_contact = ObsTerm(
             func=mdp.feet_contact,
             params={
@@ -330,7 +367,30 @@ class ObservationsCfg:
                 "threshold": 0.5,
             },
         )
-        # gait_phase = ObsTerm(func=mdp.gait_phase, params={"period": 0.8})
+        feet_stumble = ObsTerm(
+            func=mdp.current_feet_stumble,
+            params={
+                "sensor_cfg": SceneEntityCfg(
+                    "contact_forces", body_names=".*ankle_roll.*"
+                ),
+            },
+        )
+        left_foot_height_scan = ObsTerm(
+            func=mdp.height_scan_hpc,
+            params={
+                "sensor_cfg": SceneEntityCfg("left_foot_height_scanner"),
+                "offset": 0.06,
+            },
+            clip=(-1.0, 1.0),
+        )
+        right_foot_height_scan = ObsTerm(
+            func=mdp.height_scan_hpc,
+            params={
+                "sensor_cfg": SceneEntityCfg("right_foot_height_scanner"),
+                "offset": 0.06,
+            },
+            clip=(-1.0, 1.0),
+        )
 
         # 高度扫描（187）
         height_scanner = ObsTerm(
@@ -339,13 +399,13 @@ class ObservationsCfg:
                 "sensor_cfg": SceneEntityCfg("height_scanner"),
                 "offset": 0.5,  # 与 LeggedLab 对齐
             },
-            scale = 1.0,
-            noise=Unoise(n_min=-0.05, n_max=0.05) # 与 LeggedLab noise_scale=0.1 对齐
+            scale=1.0,
+            clip=(-1.0, 1.0),
         )
 
-
         def __post_init__(self):
-            self.history_length = 1
+            self.enable_corruption = False
+            self.concatenate_terms = True
 
     # privileged observations
     critic: CriticCfg = CriticCfg()
@@ -495,6 +555,10 @@ class RewardsCfg:
         },
     )
 
+    # Ablation-only rewards; intentionally disabled in the perception baseline.
+    # delta_yaw = RewTerm(func=mdp.delta_yaw_reward, weight=-0.5)
+    # volume_points_penetration = RewTerm(func=mdp.volume_points_penetration, weight=-1.0)
+
 
 @configclass
 class TerminationsCfg:
@@ -512,10 +576,9 @@ class TerminationsCfg:
 
 @configclass
 class CurriculumCfg:
-    """Curriculum terms for the MDP."""
+    """Termination-aware terrain curriculum for independently zeroed commands."""
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
-    # lin_vel_cmd_levels = CurrTerm(func=mdp.lin_vel_cmd_levels)
+    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel_with_termination)
 
 
 @configclass
@@ -544,11 +607,15 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
         self.sim.physx.gpu_max_rigid_patch_count = 10 * 2**15
+        # The 4096-env upgrade terrain can exceed PhysX's default 64 MiB collision stack.
+        self.sim.physx.gpu_collision_stack_size = 2**28
 
         # update sensor update periods
         # we tick all the sensors based on the smallest update period (physics update period)
         self.scene.contact_forces.update_period = self.sim.dt
         self.scene.height_scanner.update_period = 0.1
+        self.scene.left_foot_height_scanner.update_period = self.sim.dt
+        self.scene.right_foot_height_scanner.update_period = self.sim.dt
 
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
         # this generates terrains with increasing difficulty and is useful for training
@@ -564,38 +631,17 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
 class RobotPlayEnvCfg(RobotEnvCfg):
     def __post_init__(self):
         super().__post_init__()
+        self.events.push_robot = None
+        self.terminations.time_out = None
+
         self.scene.num_envs = 16
-        
-        # --- 核心地形难度控制 ---
-        
-        # 1. 确保 Play 时完全禁用地形课程，防止环境原点乱跑
-        if hasattr(self.curriculum, "terrain_levels"):
-            self.curriculum.terrain_levels = None 
-
-        # 2. 地形网格设计 (10行 x 20列 = 200块场地)
-        # self.scene.terrain.terrain_generator.num_rows = 10
-        # self.scene.terrain.terrain_generator.num_cols = 20
-
-        self.scene.terrain.terrain_generator.num_rows = 4
-        self.scene.terrain.terrain_generator.num_cols = 4
-
-        # 2. 锁定地形难度（最低难度0 - 最高难度1）
-        # 在原本 10 个等级（0到9）中，Level 2 的难度大约是：2 / (10 - 1) ≈ 0.222
-        # 我们将难度下界和上界都死锁在 0.222，这样生成出来的所有地形都是标准的 Level 2 难度
-        self.scene.terrain.terrain_generator.difficulty_range = (1, 1)
-        
-        # 3.机器人出生点难度设置
-        self.scene.terrain.max_init_terrain_level = 9
-
-        # 4. 关闭地形自动升降级
-        # 训练时需要课程，但 play 时如果它摔倒了就会被传回简单地形。
-        # 关掉它，让机器人死磕当前脚下的复杂地形，方便你观察。
-        if hasattr(self.curriculum, "terrain_levels"):
-            self.curriculum.terrain_levels = None
- 
+        # Generate the complete training terrain grid, but do not move between levels during play.
+        self.curriculum.terrain_levels = None
 
         # PLAY 使用固定前进速度 + 固定朝向，方便观察避障行为
+        self.commands.base_velocity.rel_standing_envs = 0.0
+        self.commands.base_velocity.terrain_specific_ranges = None
         self.commands.base_velocity.ranges.lin_vel_x = (0.5, 0.5)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
-        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
+        self.commands.base_velocity.ranges.zero_prob = (0.0, 0.0, 0.0)
