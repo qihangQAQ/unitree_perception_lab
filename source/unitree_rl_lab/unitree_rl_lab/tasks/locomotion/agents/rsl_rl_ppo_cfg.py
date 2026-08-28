@@ -12,7 +12,7 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 50000
     save_interval = 100
-    experiment_name = ""  # same as task name
+    experiment_name = "Unitree-Velocity"  # same as task name
     empirical_normalization = False
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,

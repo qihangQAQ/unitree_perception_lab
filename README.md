@@ -25,10 +25,15 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
 - Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
 - Install the Unitree RL IsaacLab standalone environments.
 
-  - Clone or copy this repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory):
+  - Clone or copy this repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory). Use `--recurse-submodules` to download the Unitree model assets at the same time:
 
     ```bash
-    git clone https://github.com/unitreerobotics/unitree_rl_lab.git
+    git clone --recurse-submodules <repository-url>
+    ```
+    If the repository has already been cloned, initialize the model submodule with:
+
+    ```bash
+    git submodule update --init --recursive
     ```
   - Use a python interpreter that has Isaac Lab installed, install the library in editable mode using:
 
@@ -40,14 +45,17 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
 - Download unitree robot description files
 
   *Method 1: Using USD Files*
-  - Download unitree usd files from [unitree_model](https://huggingface.co/datasets/unitreerobotics/unitree_model/tree/main), keeping folder structure
-    ```bash
-    git clone https://huggingface.co/datasets/unitreerobotics/unitree_model
-    ```
-  - Config `UNITREE_MODEL_DIR` in `source/unitree_rl_lab/unitree_rl_lab/assets/robots/unitree.py`.
+  - The [unitree_model](https://huggingface.co/datasets/unitreerobotics/unitree_model/tree/main) repository is included as the `unitree_model/` Git submodule. By default, the code resolves this directory relative to the project root, so no machine-specific path needs to be configured.
+  - If the model assets are stored elsewhere, override the default path with an environment variable:
 
     ```bash
-    UNITREE_MODEL_DIR = "</home/user/projects/unitree_usd>"
+    export UNITREE_MODEL_DIR=/path/to/unitree_model
+    ```
+  - For example, on a training server with model assets on a shared data volume:
+
+    ```bash
+    export UNITREE_MODEL_DIR=/data/models/unitree_model
+    ./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity
     ```
 
   *Method 2: Using URDF Files [Recommended]* Only for Isaacsim >= 5.0

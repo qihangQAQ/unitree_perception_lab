@@ -223,3 +223,91 @@ def joint_mirror(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, mirror_joint
         )
     reward *= 1 / len(mirror_joints) if len(mirror_joints) > 0 else 0
     return reward
+
+
+# ==============================================================================
+# LeggedLab 对齐：步态、姿态、安全约束
+# ==============================================================================
+
+
+def feet_air_time_positive_biped(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    threshold: float,
+    sensor_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Reward long steps for bipeds, with rotation-aware command masking.
+
+    Compared to ``feet_air_time_biped``, this version:
+    - Rewards single-stance time up to *threshold* instead of clamping air time.
+    - Masks reward using ``norm(lin_vel) + abs(ang_vel)``, so pure rotation also
+      produces a gait reward (the original only checked linear velocity).
+    """
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    air_time = contact_sensor.data.current_air_time[:, sensor_cfg.body_ids]
+    contact_time = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids]
+    in_contact = contact_time > 0.0
+    in_mode_time = torch.where(in_contact, contact_time, air_time)
+    single_stance = torch.sum(in_contact.int(), dim=1) == 1
+    reward = torch.min(torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0), dim=1)[0]
+    reward = torch.clamp(reward, max=threshold)
+    cmd = env.command_manager.get_command(command_name)
+    reward *= (torch.norm(cmd[:, :2], dim=1) + torch.abs(cmd[:, 2])) > 0.1
+    return reward
+
+
+def fly(
+    env: ManagerBasedRLEnv,
+    threshold: float,
+    sensor_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Penalize both feet being off the ground simultaneously."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    net_contact_forces = contact_sensor.data.net_forces_w_history
+    is_contact = torch.max(
+        torch.norm(net_contact_forces[:, :, sensor_cfg.body_ids], dim=-1), dim=1
+    )[0] > threshold
+    return torch.sum(is_contact, dim=-1) < 0.5
+
+
+def body_orientation_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Penalize torso tilt away from upright (gravity-aligned)."""
+    from isaaclab.utils.math import quat_apply_inverse
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_orientation = quat_apply_inverse(
+        asset.data.body_quat_w[:, asset_cfg.body_ids[0], :],
+        asset.data.GRAVITY_VEC_W,
+    )
+    return torch.sum(torch.square(body_orientation[:, :2]), dim=1)
+
+
+def body_force(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    threshold: float = 500,
+    max_reward: float = 400,
+) -> torch.Tensor:
+    """Penalize large vertical contact forces on specified bodies (e.g. feet)."""
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    reward = contact_sensor.data.net_forces_w[:, sensor_cfg.body_ids, 2].norm(dim=-1)
+    reward[reward < threshold] = 0
+    reward[reward > threshold] -= threshold
+    reward = reward.clamp(min=0, max=max_reward)
+    return reward
+
+
+def feet_too_near_humanoid(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    threshold: float = 0.2,
+) -> torch.Tensor:
+    """Penalize feet that are too close to each other (biped-specific, expects exactly 2 feet)."""
+    assert len(asset_cfg.body_ids) == 2
+    asset: Articulation = env.scene[asset_cfg.name]
+    feet_pos = asset.data.body_pos_w[:, asset_cfg.body_ids, :]
+    distance = torch.norm(feet_pos[:, 0] - feet_pos[:, 1], dim=-1)
+    return (threshold - distance).clamp(min=0)
