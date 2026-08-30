@@ -25,7 +25,16 @@ from unitree_rl_lab.sensors import (
     VolumePointsCfg,
 )
 from unitree_rl_lab.tasks.locomotion import mdp
-from unitree_rl_lab.terrains import UPGRADE_TERRAIN1, EdgeCylinderCfg, TerrainImporterCfg
+from unitree_rl_lab.terrains import (
+    UPGRADE_TERRAIN1,
+    UPGRADE_TERRAIN2,
+    EdgeCylinderCfg,
+    TerrainImporterCfg,
+)
+
+CROSS_STEPPING_STONES_TERRAIN = "cross_stepping_stones"
+STEPPING_STONES_TERRAIN = "stepping_stones"
+GAP_TERRAIN = "gap"
 
 # G1 visual links used by InstinctLab's perceptive tasks. Keeping the robot
 # meshes in the ray-cast targets reproduces self-occlusion in the depth image.
@@ -80,7 +89,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
-        terrain_generator=UPGRADE_TERRAIN1,
+        terrain_generator=UPGRADE_TERRAIN2,
         max_init_terrain_level=2,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -264,6 +273,23 @@ class EventCfg:
                 "pitch": (-0.5, 0.5),
                 "yaw": (-0.5, 0.5),
             },
+            "terrain_specific_pos_range": {
+                CROSS_STEPPING_STONES_TERRAIN: {
+                    "x": (-0.3, 0.3),
+                    "y": (-0.3, 0.3),
+                },
+                STEPPING_STONES_TERRAIN: {
+                    "x": (-0.5, 0.5),
+                    "y": (-0.5, 0.5),
+                },
+                GAP_TERRAIN: {
+                    "x": (-0.5, 0.5),
+                    "y": (-0.5, 0.5),
+                },
+            },
+            "terrain_specific_yaw": {
+                CROSS_STEPPING_STONES_TERRAIN: (0.0, 1.57, 3.14, -1.57),
+            },
         },
     )
 
@@ -317,6 +343,24 @@ class CommandsCfg:
                 ang_vel_z=(-1.0, 1.0),
                 zero_prob=(0.4, 0.8, 0.4),
             ),
+            CROSS_STEPPING_STONES_TERRAIN: mdp.TerrainAwareUniformVelocityCommandCfg.Ranges(
+                lin_vel_x=(0.0, 1.0),
+                lin_vel_y=(0.0, 0.0),
+                ang_vel_z=(0.0, 0.0),
+                zero_prob=(0.5, 0.9, 0.5),
+            ),
+            STEPPING_STONES_TERRAIN: mdp.TerrainAwareUniformVelocityCommandCfg.Ranges(
+                lin_vel_x=(0.0, 1.5),
+                lin_vel_y=(0.0, 0.0),
+                ang_vel_z=(-1.0, 1.0),
+                zero_prob=(0.5, 0.9, 0.5),
+            ),
+            GAP_TERRAIN: mdp.TerrainAwareUniformVelocityCommandCfg.Ranges(
+                lin_vel_x=(0.0, 1.5),
+                lin_vel_y=(0.0, 0.0),
+                ang_vel_z=(-1.0, 1.0),
+                zero_prob=(0.5, 0.9, 0.5),
+            ),
         },
     )
 
@@ -342,6 +386,7 @@ class ObservationsCfg:
             func=mdp.base_ang_vel,
             scale=1.0,
             noise=Unoise(n_min=-0.2, n_max=0.2),
+            clip=(-18.0, 18.0),
         )
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity,
@@ -354,13 +399,15 @@ class ObservationsCfg:
         joint_pos_rel = ObsTerm(
             func=mdp.joint_pos_rel,
             noise=Unoise(n_min=-0.05, n_max=0.05),
+            clip=(-18.0, 18.0),
         )
         joint_vel_rel = ObsTerm(
             func=mdp.joint_vel_rel,
-            scale=1.0,
+            scale=0.05,
             noise=Unoise(n_min=-0.5, n_max=0.5),
+            clip=(-360.0, 360.0),
         )
-        last_action = ObsTerm(func=mdp.last_action)
+        last_action = ObsTerm(func=mdp.last_action, clip=(-18.0, 18.0))
 
         def __post_init__(self):
             self.history_length = 5
@@ -374,16 +421,16 @@ class ObservationsCfg:
     class CriticCfg(ObsGroup):
         """Clean privileged observations aligned with perception-pro."""
 
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0)
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, clip=(-18.0, 18.0))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0, clip=(-18.0, 18.0))
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
         velocity_commands = ObsTerm(
             func=mdp.generated_commands,
             params={"command_name": "base_velocity"},
         )
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=1.0)
-        last_action = ObsTerm(func=mdp.last_action)
+        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-18.0, 18.0))
+        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-360.0, 360.0))
+        last_action = ObsTerm(func=mdp.last_action, clip=(-18.0, 18.0))
         payload = ObsTerm(
             func=mdp.payload,
             params={
@@ -461,12 +508,12 @@ class ObservationsCfg:
     class AuxiliaryCfg(ObsGroup):
         """Clean 96-D physical state used as the Old-HIM target."""
 
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0)
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0, clip=(-18.0, 18.0))
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=1.0)
-        last_action = ObsTerm(func=mdp.last_action)
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
+        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-18.0, 18.0))
+        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-360.0, 360.0))
+        last_action = ObsTerm(func=mdp.last_action, clip=(-18.0, 18.0))
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, clip=(-18.0, 18.0))
 
         def __post_init__(self):
             self.enable_corruption = False

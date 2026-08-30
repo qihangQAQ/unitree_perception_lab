@@ -34,7 +34,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
-        terrain_generator=UPGRADE_TERRAIN1,
+        terrain_generator=UPGRADE_TERRAIN2,
         max_init_terrain_level=2,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
@@ -286,6 +286,7 @@ class ObservationsCfg:
             func=mdp.base_ang_vel,
             scale=1.0,
             noise=Unoise(n_min=-0.2, n_max=0.2),
+            clip=(-18.0, 18.0),
         )
         projected_gravity = ObsTerm(
             func=mdp.projected_gravity,
@@ -298,13 +299,15 @@ class ObservationsCfg:
         joint_pos_rel = ObsTerm(
             func=mdp.joint_pos_rel,
             noise=Unoise(n_min=-0.05, n_max=0.05),
+            clip=(-18.0, 18.0),
         )
         joint_vel_rel = ObsTerm(
             func=mdp.joint_vel_rel,
-            scale=1.0,
+            scale=0.05,
             noise=Unoise(n_min=-0.5, n_max=0.5),
+            clip=(-360.0, 360.0),
         )
-        last_action = ObsTerm(func=mdp.last_action)
+        last_action = ObsTerm(func=mdp.last_action, clip=(-18.0, 18.0))
 
         def __post_init__(self):
             self.history_length = 5
@@ -339,16 +342,16 @@ class ObservationsCfg:
     class CriticCfg(ObsGroup):
         """Clean privileged observations for the value network."""
 
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0)
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, clip=(-18.0, 18.0))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0, clip=(-18.0, 18.0))
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
         velocity_commands = ObsTerm(
             func=mdp.generated_commands,
             params={"command_name": "base_velocity"},
         )
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=1.0)
-        last_action = ObsTerm(func=mdp.last_action)
+        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-18.0, 18.0))
+        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-360.0, 360.0))
+        last_action = ObsTerm(func=mdp.last_action, clip=(-18.0, 18.0))
         payload = ObsTerm(
             func=mdp.payload,
             params={
@@ -426,12 +429,12 @@ class ObservationsCfg:
     class AuxiliaryCfg(ObsGroup):
         """Clean 96-D physical state for the Old-HIM target encoder."""
 
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0)
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0, clip=(-18.0, 18.0))
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=1.0)
-        last_action = ObsTerm(func=mdp.last_action)
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
+        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-18.0, 18.0))
+        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-360.0, 360.0))
+        last_action = ObsTerm(func=mdp.last_action, clip=(-18.0, 18.0))
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, clip=(-18.0, 18.0))
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -610,6 +613,8 @@ class TerminationsCfg:
             "threshold": 1.0,
         },
     )
+    # base_height = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.2})
+    # bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 0.8})
 
 
 @configclass

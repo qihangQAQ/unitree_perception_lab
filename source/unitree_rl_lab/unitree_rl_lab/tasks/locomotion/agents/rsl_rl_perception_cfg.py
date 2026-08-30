@@ -52,6 +52,7 @@ class UnitreePerceptionRunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 10000
     save_interval = 500
+    clip_actions = 18.0
     experiment_name = "Unitree-Velocity_perception" 
     empirical_normalization = False
     obs_groups = {"policy": ["policy"], "critic": ["critic"]}

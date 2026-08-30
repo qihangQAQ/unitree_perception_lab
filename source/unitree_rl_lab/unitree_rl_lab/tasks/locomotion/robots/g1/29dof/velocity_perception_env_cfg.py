@@ -291,17 +291,17 @@ class ObservationsCfg:
 
         # observation terms (order preserved)
         # 机身角速度（3）
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0)
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0, clip=(-18.0, 18.0))
         # 重力向量（3）、
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
         # 指令根节点线速度（3）
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
         # 关节位置（29）
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
+        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-18.0, 18.0))
         # 关节速度（29）
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=1.0)
+        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-360.0, 360.0))
         # 上一帧动作（29）
-        last_action = ObsTerm(func=mdp.last_action)
+        last_action = ObsTerm(func=mdp.last_action, clip=(-18.0, 18.0))
         # gait_phase = ObsTerm(func=mdp.gait_phase, params={"period": 0.8})
 
         # 高度扫描（187）
@@ -311,8 +311,9 @@ class ObservationsCfg:
                 "sensor_cfg": SceneEntityCfg("height_scanner"),
                 "offset": 0.5,  # 与 LeggedLab 对齐
             },
-            scale = 1.0,
-            noise=Unoise(n_min=-0.05, n_max=0.05) # 与 LeggedLab noise_scale=0.1 对齐
+            scale=1.0,
+            clip=(-1.0, 1.0),
+            noise=Unoise(n_min=-0.05, n_max=0.05),  # 与 LeggedLab noise_scale=0.1 对齐
         )
 
         def __post_init__(self):
@@ -327,13 +328,13 @@ class ObservationsCfg:
     class CriticCfg(ObsGroup):
         """Clean privileged observations for the value network."""
 
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0)
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, clip=(-18.0, 18.0))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=1.0, clip=(-18.0, 18.0))
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=1.0)
-        last_action = ObsTerm(func=mdp.last_action)
+        joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, clip=(-18.0, 18.0))
+        joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, clip=(-360.0, 360.0))
+        last_action = ObsTerm(func=mdp.last_action, clip=(-18.0, 18.0))
         payload = ObsTerm(
             func=mdp.payload,
             params={
