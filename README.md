@@ -1,97 +1,110 @@
-# Unitree RL Lab
+# Unitree_perception_lab
 
 [![IsaacSim](https://img.shields.io/badge/IsaacSim-5.1.0-silver.svg)](https://docs.omniverse.nvidia.com/isaacsim/latest/overview.html)
 [![Isaac Lab](https://img.shields.io/badge/IsaacLab-2.3.0-silver)](https://isaac-sim.github.io/IsaacLab)
 [![License](https://img.shields.io/badge/license-Apache2.0-yellow.svg)](https://opensource.org/license/apache-2-0)
-[![Discord](https://img.shields.io/badge/-Discord-5865F2?style=flat&logo=Discord&logoColor=white)](https://discord.gg/ZwcVwxv5rq)
+
+## 项目简介
+
+Perception_lab 是一个面向复杂地形人形机器人运动控制的感知强化学习框架。项目基于 [Isaac Lab](https://github.com/isaac-sim/IsaacLab) 构建，并在 [Unitree RL Lab](https://github.com/unitreerobotics/unitree_rl_lab) 的基础上进行开发，主要研究对象为宇树 G1 29 自由度人形机器人。
+
+项目包含高程图循环策略基线、三个独立消融任务，以及结合状态估计、交叉注意力和混合专家网络的高程图与深度图感知策略。此外，项目还保留了 Go2、H1 和 G1 29 自由度机器人的基础速度控制与动作模仿任务。
 
 
-## Overview
+## 观测维度
 
-This project provides a set of reinforcement learning environments for Unitree robots, built on top of [IsaacLab](https://github.com/isaac-sim/IsaacLab).
+G1 感知任务使用以下观测：
 
-Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
+- **本体观测（96 维）：** 机身角速度（3）、投影重力（3）、速度指令（3）、关节位置（29）、关节速度（29）和上一帧动作（29）。
+- **高程图（187 维）：** `17 x 11` 地形高度采样点。
+- **深度图（384 维）：** `16 x 24 x 1` 单通道深度图像。
+- **Critic 特权观测（404 维）：** 包含无噪声机器人状态、机身线速度、随机化物理参数、足端接触信息、足端局部高度扫描和全局高程图。
 
-<div align="center">
+## 核心感知运动任务
 
-| <div align="center"> Isaac Lab </div> | <div align="center">  Mujoco </div> |  <div align="center"> Physical </div> |
-|--- | --- | --- |
-| [<img src="https://oss-global-cdn.unitree.com/static/d879adac250648c587d3681e90658b49_480x397.gif" width="240px">](g1_sim.gif) | [<img src="https://oss-global-cdn.unitree.com/static/3c88e045ab124c3ab9c761a99cb5e71f_480x397.gif" width="240px">](g1_mujoco.gif) | [<img src="https://oss-global-cdn.unitree.com/static/6c17c6cf52ec4e26bbfab1fbf591adb2_480x270.gif" width="240px">](g1_real.gif) |
+三个消融任务均直接继承感知基线，每个任务只加入一种实验机制，彼此之间不叠加。
 
-</div>
+| 任务 | 技术栈与作用 |
+|---|---|
+| `Unitree-G1-29dof-Velocity-perception` | 96 维本体观测 + `17 x 11` 高程图，Actor 每步输入 283 维；LSTM + PPO；Critic 使用 404 维完整特权观测。 |
+| `Unitree-G1-29dof-Velocity-perception-Exp1` | 特权观测消融：Actor 改用与 Critic 相同的 404 维完整特权观测，作为性能上界对照。 |
+| `Unitree-G1-29dof-Velocity-perception-Exp2` | 地形边缘约束消融：在感知基线上加入虚拟地形边缘、脚踝体积点检测和穿透惩罚。 |
+| `Unitree-G1-29dof-Velocity-perception-Exp3` | 下楼奖励消融：在感知基线上加入下楼前进奖励和停滞惩罚。 |
+| `Unitree-G1-29dof-Velocity-perception-pro` | `5 x 96` 本体历史 + `17 x 11` 高程图；Multi-Head Cross-Attention + Old-HIM + 4-expert MoE；融合后的 Actor 输入为 147 维，Critic 为 404 维。 |
+| `Unitree-G1-29dof-Velocity-depth` | `5 x 96` 本体历史 + `16 x 24 x 1` 深度图（384 维）；CNN + Multi-Head Cross-Attention + Old-HIM + 4-expert MoE；融合后的 Actor 输入为 147 维，Critic 为 404 维。 |
+
+## 其他任务
+
+| 任务 | 机器人 | 功能 |
+|---|---|---|
+| `Unitree-Go2-Velocity` | Go2 | 四足机器人速度跟踪。 |
+| `Unitree-H1-Velocity` | H1 | 人形机器人速度与步态控制。 |
+| `Unitree-G1-29dof-Velocity` | G1 29 自由度 | 基础本体感知速度控制。 |
+| `Unitree-G1-29dof-Velocity-Extra` | G1 29 自由度 | 使用另一套 G1 模型和运动奖励设计。 |
+| `Unitree-G1-29dof-Mimic-Dance-102` | G1 29 自由度 | Dance-102 全身动作跟踪。 |
+| `Unitree-G1-29dof-Mimic-Gangnanm-Style` | G1 29 自由度 | Gangnam Style 全身动作跟踪。 |
 
 ## Installation
 
 - Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).
 - Install the Unitree RL IsaacLab standalone environments.
 
-  - Clone or copy this repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory). Use `--recurse-submodules` to download the Unitree model assets at the same time:
-
     ```bash
-    git clone --recurse-submodules <repository-url>
-    ```
-    If the repository has already been cloned, initialize the model submodule with:
-
-    ```bash
-    git submodule update --init --recursive
-    ```
-  - Use a python interpreter that has Isaac Lab installed, install the library in editable mode using:
-
-    ```bash
-    conda activate env_isaaclab
+    conda activate lab
     ./unitree_rl_lab.sh -i
     # restart your shell to activate the environment changes.
     ```
-- Download unitree robot description files
-
-  *Method 1: Using USD Files*
-  - The [unitree_model](https://huggingface.co/datasets/unitreerobotics/unitree_model/tree/main) repository is included as the `unitree_model/` Git submodule. By default, the code resolves this directory relative to the project root, so no machine-specific path needs to be configured.
-  - If the model assets are stored elsewhere, override the default path with an environment variable:
-
-    ```bash
-    export UNITREE_MODEL_DIR=/path/to/unitree_model
-    ```
-  - For example, on a training server with model assets on a shared data volume:
-
-    ```bash
-    export UNITREE_MODEL_DIR=/data/models/unitree_model
-    ./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity
-    ```
-
-  *Method 2: Using URDF Files [Recommended]* Only for Isaacsim >= 5.0
-  -  Download unitree robot urdf files from [unitree_ros](https://github.com/unitreerobotics/unitree_ros)
-      ```
-      git clone https://github.com/unitreerobotics/unitree_ros.git
-      ```
-  - Config `UNITREE_ROS_DIR` in `source/unitree_rl_lab/unitree_rl_lab/assets/robots/unitree.py`.
-    ```bash
-    UNITREE_ROS_DIR = "</home/user/projects/unitree_ros/unitree_ros>"
-    ```
-  - [Optional]: change *robot_cfg.spawn* if you want to use urdf files
 
 
 
-- Verify that the environments are correctly installed by:
-
-  - Listing the available tasks:
+## Training and Evaluation
+ Listing the available tasks:
 
     ```bash
     ./unitree_rl_lab.sh -l # This is a faster version than isaaclab
-    ```
-  - Running a task:
 
-    ```bash
-    ./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity # support for autocomplete task-name
-    # same as
-    python scripts/rsl_rl/train.py --headless --task Unitree-G1-29dof-Velocity
-    ```
-  - Inference with a trained agent:
+Train the recurrent height-map baseline:
 
-    ```bash
-    ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity # support for autocomplete task-name
-    # same as
-    python scripts/rsl_rl/play.py --task Unitree-G1-29dof-Velocity
-    ```
+```bash
+./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity-perception
+```
+
+Train one of the independent ablations:
+
+```bash
+./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity-perception-Exp1
+./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity-perception-Exp2
+./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity-perception-Exp3
+```
+
+Train a structured cross-attention policy:
+
+```bash
+# Height-map + Old-HIM + cross-attention + MoE
+./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity-perception-pro
+
+# Depth + Old-HIM + cross-attention + MoE
+./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity-depth
+```
+
+Run a trained policy by replacing `-t` with `-p`:
+
+```bash
+./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-perception-pro
+./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-depth
+```
+
+### Motion-imitation data preparation
+
+The repository tracks the reference motions as CSV files. Generate the NPZ file expected by a mimic task before training it:
+
+```bash
+python scripts/mimic/csv_to_npz.py \
+    -f source/unitree_rl_lab/unitree_rl_lab/tasks/mimic/robots/g1_29dof/dance_102/G1_Take_102.bvh_60hz.csv \
+    --input_fps 60
+```
+
+Use the corresponding Gangnam Style CSV path to prepare the other mimic task.
 
 ## Deploy
 
@@ -147,12 +160,3 @@ You can use this program to control the robot directly, but make sure the on-bor
 ```bash
 ./g1_ctrl --network eth0 # eth0 is the network interface name.
 ```
-
-## Acknowledgements
-
-This repository is built upon the support and contributions of the following open-source projects. Special thanks to:
-
-- [IsaacLab](https://github.com/isaac-sim/IsaacLab): The foundation for training and running codes.
-- [mujoco](https://github.com/google-deepmind/mujoco.git): Providing powerful simulation functionalities.
-- [robot_lab](https://github.com/fan-ziqi/robot_lab): Referenced for project structure and parts of the implementation.
-- [whole_body_tracking](https://github.com/HybridRobotics/whole_body_tracking): Versatile humanoid control framework for motion tracking.

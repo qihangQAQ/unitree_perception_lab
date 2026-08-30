@@ -12,7 +12,7 @@ Examples:
 
     # Load the terrain and reset ranges from a registered training task.
     python scripts/rsl_rl/visualize_terrain.py \
-        --task Unitree-G1-29dof-Velocity-perception-upgrade
+        --task Unitree-G1-29dof-Velocity-perception-pro
 
 The generated grid has one column per configured sub-terrain and one row per
 exact difficulty value. In task mode, the script also draws the XY footprint

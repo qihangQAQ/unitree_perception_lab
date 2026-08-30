@@ -81,21 +81,6 @@ gym.register(
 )
 
 
-# 高程图感知升级控制，使用源项目的额外 G1 模型
-gym.register(
-    id="Unitree-G1-29dof-Velocity-perception-upgrade",
-    entry_point="unitree_rl_lab.envs:TerrainLoggingManagerBasedRLEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.velocity_perception_upgrade_env_cfg:RobotEnvCfg",
-        "play_env_cfg_entry_point": f"{__name__}.velocity_perception_upgrade_env_cfg:RobotPlayEnvCfg",
-        "rsl_rl_cfg_entry_point": (
-            "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_perception_cfg:UnitreePerceptionRunnerCfg"
-        ),
-    },
-)
-
-
 # 高程图感知 Pro：历史状态估计、交叉注意力和 Actor MoE。
 gym.register(
     id="Unitree-G1-29dof-Velocity-perception-pro",
