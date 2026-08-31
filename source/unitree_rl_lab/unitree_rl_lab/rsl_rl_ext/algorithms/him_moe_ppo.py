@@ -8,10 +8,10 @@ import torch.optim as optim
 
 from rsl_rl.algorithms import PPO
 
-from .storage import PerceptionProRolloutStorage
+from ..storage.him_storage import HimRolloutStorage
 
 
-class PerceptionProPPO(PPO):
+class HimMoePPO(PPO):
     """PPO plus velocity regression and Old-HIM swapped prototype prediction."""
 
     def __init__(
@@ -27,7 +27,7 @@ class PerceptionProPPO(PPO):
     ):
         super().__init__(policy, **kwargs)
         if self.rnd is not None or self.symmetry is not None:
-            raise ValueError("PerceptionProPPO currently expects rnd_cfg=None and symmetry_cfg=None.")
+            raise ValueError("HimMoePPO currently expects rnd_cfg=None and symmetry_cfg=None.")
 
         self.velocity_loss_coef = velocity_loss_coef
         self.him_swap_loss_coef = him_swap_loss_coef
@@ -50,10 +50,10 @@ class PerceptionProPPO(PPO):
             self.estimator_parameters,
             lr=estimator_learning_rate,
         )
-        self.transition = PerceptionProRolloutStorage.Transition()
+        self.transition = HimRolloutStorage.Transition()
 
     def init_storage(self, training_type, num_envs, num_transitions_per_env, obs, actions_shape):
-        self.storage = PerceptionProRolloutStorage(
+        self.storage = HimRolloutStorage(
             training_type,
             num_envs,
             num_transitions_per_env,

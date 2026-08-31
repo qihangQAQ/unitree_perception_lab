@@ -1,4 +1,4 @@
-"""Neural-network building blocks for the perception-pro policy."""
+"""Neural-network modules shared by perceptive HIM-MoE policies."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def sinkhorn_assignments(
 
 
 class OldHIMEstimator(nn.Module):
-    """Estimate velocity and a future-aware latent from five proprioceptive frames."""
+    """Estimate velocity and a future-aware latent from proprioceptive history."""
 
     def __init__(
         self,
@@ -173,38 +173,52 @@ class OldHIMEstimator(nn.Module):
         return velocity_loss, swap_loss
 
 
-class HeightMapCrossAttention(nn.Module):
-    """Encode an 11x17 height map into 187 spatial tokens and query it with robot state."""
+class SpatialCrossAttention(nn.Module):
+    """Encode a height map or depth image and query its spatial tokens with robot state."""
 
     def __init__(
         self,
-        height_map_shape: tuple[int, int],
+        observation_shape: tuple[int, int],
+        input_mode: str,
         proprio_dim: int,
         model_dim: int,
         output_dim: int,
+        first_conv_channels: int,
+        first_conv_stride: int,
         num_heads: int,
         attention_batch_size: int,
         activation: str,
     ):
         super().__init__()
+        if len(observation_shape) != 2 or any(dimension <= 0 for dimension in observation_shape):
+            raise ValueError(f"observation_shape must contain two positive dimensions, got {observation_shape}.")
+        if input_mode not in {"flat", "image"}:
+            raise ValueError(f"input_mode must be 'flat' or 'image', got {input_mode!r}.")
         if model_dim % num_heads != 0:
             raise ValueError(f"model_dim={model_dim} must be divisible by num_heads={num_heads}.")
         if attention_batch_size <= 0:
             raise ValueError("attention_batch_size must be positive.")
+        if first_conv_channels % 4 != 0 or model_dim % 8 != 0:
+            raise ValueError("first_conv_channels and model_dim must be divisible by 4 and 8 respectively.")
+        if first_conv_stride <= 0:
+            raise ValueError("first_conv_stride must be positive.")
 
-        self.height_map_shape = height_map_shape
-        self.height_map_dim = height_map_shape[0] * height_map_shape[1]
+        self.observation_shape = observation_shape
+        self.observation_dim = observation_shape[0] * observation_shape[1]
+        self.input_mode = input_mode
         self.attention_batch_size = attention_batch_size
 
         self.cnn = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),
-            nn.GroupNorm(4, 16),
+            nn.Conv2d(1, first_conv_channels, kernel_size=3, stride=first_conv_stride, padding=1),
+            nn.GroupNorm(4, first_conv_channels),
             resolve_activation(activation),
-            nn.Conv2d(16, model_dim, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(first_conv_channels, model_dim, kernel_size=3, stride=1, padding=1),
             nn.GroupNorm(8, model_dim),
             resolve_activation(activation),
         )
-        self.num_tokens = height_map_shape[0] * height_map_shape[1]
+        token_rows = (observation_shape[0] + first_conv_stride - 1) // first_conv_stride
+        token_cols = (observation_shape[1] + first_conv_stride - 1) // first_conv_stride
+        self.num_tokens = token_rows * token_cols
         self.position_embedding = nn.Parameter(torch.empty(1, self.num_tokens, model_dim))
         nn.init.trunc_normal_(self.position_embedding, std=0.02)
 
@@ -221,6 +235,72 @@ class HeightMapCrossAttention(nn.Module):
             nn.Linear(model_dim, output_dim),
             resolve_activation(activation),
         )
+
+    @property
+    def export_input_shape(self) -> tuple[int, ...]:
+        """Return the fixed ONNX shape, excluding its batch dimension."""
+
+        if self.input_mode == "flat":
+            return (self.observation_dim,)
+        return (*self.observation_shape, 1)
+
+    def validate_observation_shape(self, shape: tuple[int, ...]) -> None:
+        """Validate an observation-manager shape without its batch dimension."""
+
+        height, width = self.observation_shape
+        if self.input_mode == "flat":
+            if shape != (self.observation_dim,):
+                raise ValueError(
+                    f"Expected flattened spatial observation [{self.observation_dim}], got {shape}."
+                )
+            return
+
+        supported_shapes = (
+            (height, width),
+            (height, width, 1),
+            (1, height, width),
+            (1, height, width, 1),
+        )
+        if shape not in supported_shapes:
+            raise ValueError(
+                f"Expected a {height}x{width} single-channel image, got {shape}."
+            )
+
+    def _as_channels_first(self, observation: torch.Tensor) -> torch.Tensor:
+        """Normalize supported observation layouts to ``[B, 1, H, W]``."""
+
+        height, width = self.observation_shape
+        if self.input_mode == "flat":
+            if not torch.jit.is_tracing() and (
+                observation.ndim != 2 or observation.shape[-1] != self.observation_dim
+            ):
+                raise ValueError(
+                    f"Expected flattened spatial observation [B, {self.observation_dim}], "
+                    f"got {tuple(observation.shape)}."
+                )
+            return observation.reshape(observation.shape[0], 1, height, width)
+
+        if torch.jit.is_tracing():
+            # The image-mode ONNX contract is fixed to channels-last [B,H,W,1].
+            return observation.permute(0, 3, 1, 2)
+        if observation.ndim == 5 and observation.shape[1] == 1 and observation.shape[-1] == 1:
+            observation = observation[:, 0]
+        if observation.ndim == 4 and observation.shape[-1] == 1:
+            observation = observation.permute(0, 3, 1, 2)
+        elif observation.ndim == 4 and observation.shape[1] == 1:
+            pass
+        elif observation.ndim == 3:
+            observation = observation.unsqueeze(1)
+        else:
+            raise ValueError(
+                "Expected image [B,H,W], [B,H,W,1], [B,1,H,W], or [B,1,H,W,1], "
+                f"got {tuple(observation.shape)}."
+            )
+        if tuple(observation.shape[-2:]) != (height, width):
+            raise ValueError(
+                f"Expected image {height}x{width}, got {tuple(observation.shape[-2:])}."
+            )
+        return observation
 
     def _attend(self, query: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
         """Apply attention in bounded chunks for large PPO mini-batches."""
@@ -242,20 +322,14 @@ class HeightMapCrossAttention(nn.Module):
 
     def forward(
         self,
-        height_map: torch.Tensor,
+        observation: torch.Tensor,
         current_proprio: torch.Tensor,
         velocity_estimate: torch.Tensor,
     ) -> torch.Tensor:
-        if not torch.jit.is_tracing() and (
-            height_map.ndim != 2 or height_map.shape[-1] != self.height_map_dim
-        ):
-            raise ValueError(
-                f"Expected flattened height map [B, {self.height_map_dim}], "
-                f"got {tuple(height_map.shape)}."
-            )
-
-        image = height_map.reshape(height_map.shape[0], 1, *self.height_map_shape)
+        image = self._as_channels_first(observation)
         tokens = self.cnn(image).flatten(start_dim=2).transpose(1, 2)
+        if not torch.jit.is_tracing() and tokens.shape[1] != self.num_tokens:
+            raise ValueError(f"Expected {self.num_tokens} spatial tokens, got {tokens.shape[1]}.")
         tokens = tokens + self.position_embedding
 
         query_input = torch.cat((current_proprio, velocity_estimate), dim=-1)
@@ -267,7 +341,7 @@ class HeightMapCrossAttention(nn.Module):
 
 
 class DenseMoEActor(nn.Module):
-    """Reference-style dense softmax MoE actor without an auxiliary balance loss."""
+    """Dense softmax MoE actor without an auxiliary balance loss."""
 
     def __init__(
         self,

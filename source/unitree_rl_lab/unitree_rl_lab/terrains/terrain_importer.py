@@ -32,9 +32,11 @@ class TerrainImporter(TerrainImporterBase):
         mesh.merge_vertices()
         mesh.update_faces(mesh.unique_faces())
         mesh.remove_unreferenced_vertices()
+
         for obstacle_name, virtual_obstacle in self._virtual_obstacles.items():
             with Timer(f"Generate virtual obstacle {obstacle_name}"):
                 virtual_obstacle.generate(mesh, device=self.device)
+
         super().import_mesh(name, mesh)
 
     def set_debug_vis(self, debug_vis: bool) -> bool:

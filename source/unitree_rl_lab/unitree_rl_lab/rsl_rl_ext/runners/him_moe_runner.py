@@ -1,4 +1,4 @@
-"""Runner wiring local perception-pro modules into the installed RSL-RL package."""
+"""RSL-RL runner for the shared HIM, cross-attention, and MoE policy."""
 
 from __future__ import annotations
 
@@ -9,14 +9,14 @@ import torch
 from rsl_rl.modules import resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.runners import OnPolicyRunner
 
-from .actor_critic import PerceptionProActorCritic
-from .ppo import PerceptionProPPO
+from ..algorithms.him_moe_ppo import HimMoePPO
+from ..modules.actor_critic import HimMoeActorCritic
 
 
-class PerceptionProRunner(OnPolicyRunner):
-    """OnPolicyRunner that constructs repository-local policy and PPO classes directly."""
+class HimMoeRunner(OnPolicyRunner):
+    """Construct and checkpoint the project-wide perceptive policy extension."""
 
-    def _construct_algorithm(self, obs) -> PerceptionProPPO:
+    def _construct_algorithm(self, obs) -> HimMoePPO:
         self.alg_cfg = resolve_rnd_config(self.alg_cfg, obs, self.cfg["obs_groups"], self.env)
         self.alg_cfg = resolve_symmetry_config(self.alg_cfg, self.env)
 
@@ -31,9 +31,9 @@ class PerceptionProRunner(OnPolicyRunner):
                 self.policy_cfg["critic_obs_normalization"] = self.cfg["empirical_normalization"]
 
         policy_class_name = self.policy_cfg.pop("class_name")
-        if policy_class_name != "PerceptionProActorCritic":
-            raise ValueError(f"Unsupported perception-pro policy class: {policy_class_name!r}.")
-        policy = PerceptionProActorCritic(
+        if policy_class_name != "HimMoeActorCritic":
+            raise ValueError(f"Unsupported HIM-MoE policy class: {policy_class_name!r}.")
+        policy = HimMoeActorCritic(
             obs,
             self.cfg["obs_groups"],
             self.env.num_actions,
@@ -41,9 +41,9 @@ class PerceptionProRunner(OnPolicyRunner):
         ).to(self.device)
 
         algorithm_class_name = self.alg_cfg.pop("class_name")
-        if algorithm_class_name != "PerceptionProPPO":
-            raise ValueError(f"Unsupported perception-pro algorithm class: {algorithm_class_name!r}.")
-        algorithm = PerceptionProPPO(
+        if algorithm_class_name != "HimMoePPO":
+            raise ValueError(f"Unsupported HIM-MoE algorithm class: {algorithm_class_name!r}.")
+        algorithm = HimMoePPO(
             policy,
             device=self.device,
             **self.alg_cfg,
@@ -59,7 +59,7 @@ class PerceptionProRunner(OnPolicyRunner):
         return algorithm
 
     def save(self, path: str, infos=None):
-        """Save both the PPO and the independent Old-HIM optimizer states."""
+        """Save both PPO and independent Old-HIM optimizer states."""
 
         saved_dict = {
             "model_state_dict": self.alg.policy.state_dict(),
@@ -73,7 +73,7 @@ class PerceptionProRunner(OnPolicyRunner):
             self.writer.save_model(path, self.current_learning_iteration)
 
     def load(self, path: str, load_optimizer: bool = True, map_location: str | None = None):
-        """Restore the policy and, when requested, both optimizer states."""
+        """Restore new or legacy task-specific policy and optimizer states."""
 
         loaded_dict = torch.load(path, weights_only=False, map_location=map_location)
         resumed_training = self.alg.policy.load_state_dict(loaded_dict["model_state_dict"])

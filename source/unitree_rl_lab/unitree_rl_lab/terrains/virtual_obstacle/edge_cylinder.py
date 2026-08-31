@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 import trimesh
+from isaaclab.markers import VisualizationMarkers
 
 from unitree_rl_lab.utils.warp import CylinderSpatialGrid
 
@@ -25,8 +26,14 @@ class EdgeCylinder(VirtualObstacleBase):
         super().__init__(cfg)
         self.device = torch.device("cpu")
         self.cylinders: CylinderSpatialGrid | None = None
+        self.edges = torch.empty((0, 6), dtype=torch.float32)
 
     def generate(self, mesh: trimesh.Trimesh, device: torch.device | str = "cpu"):
+        edge_coordinates = self._extract_sharp_edges(mesh)
+        edge_coordinates = self._merge_connected_edges(edge_coordinates)
+        self._initialize_cylinders(edge_coordinates, device)
+
+    def _extract_sharp_edges(self, mesh: trimesh.Trimesh) -> np.ndarray:
         threshold = np.deg2rad(self.cfg.angle_threshold)
         sharp_mask = mesh.face_adjacency_angles > threshold
         if np.any(sharp_mask):
@@ -35,14 +42,21 @@ class EdgeCylinder(VirtualObstacleBase):
             edge_coordinates = np.hstack(
                 [vertices[sharp_edges[:, 0]], vertices[sharp_edges[:, 1]]]
             )
-            edge_coordinates = self._merge_connected_edges(edge_coordinates)
-        else:
-            edge_coordinates = np.empty((0, 6), dtype=np.float32)
+            return np.asarray(edge_coordinates, dtype=np.float32)
+        return np.empty((0, 6), dtype=np.float32)
 
+    def _initialize_cylinders(
+        self,
+        edge_coordinates: np.ndarray,
+        device: torch.device | str,
+    ):
         self.device = (
             device if isinstance(device, torch.device) else torch.device(device)
         )
         self.num_edges = len(edge_coordinates)
+        self.edges = torch.as_tensor(
+            edge_coordinates, dtype=torch.float32, device=self.device
+        )
         if edge_coordinates.size == 0:
             self.cylinders = None
             return
@@ -63,6 +77,56 @@ class EdgeCylinder(VirtualObstacleBase):
             num_grid_cells=self.cfg.num_grid_cells,
             device=self.device,
         )
+
+    def visualize(self):
+        """Draw the analytical edge cylinders used by penetration queries."""
+        if self.edges.numel() == 0:
+            self.disable_visualizer()
+            return
+
+        if not hasattr(self, "_cylinder_visualizer"):
+            self._cylinder_visualizer = VisualizationMarkers(self.cfg.visualizer)
+
+        direction = self.edges[:, 3:6] - self.edges[:, :3]
+        lengths = torch.linalg.vector_norm(direction, dim=-1)
+        valid = lengths > 1.0e-6
+        if not torch.any(valid):
+            self.disable_visualizer()
+            return
+
+        direction = direction[valid]
+        lengths = lengths[valid]
+        translations = 0.5 * (self.edges[valid, :3] + self.edges[valid, 3:6])
+        orientations = self._orient_z_axis(direction / lengths.unsqueeze(-1))
+        scales = torch.empty((lengths.shape[0], 3), device=self.device)
+        scales[:, :2] = float(self.cfg.cylinder_radius)
+        scales[:, 2] = lengths
+
+        self._cylinder_visualizer.set_visibility(True)
+        self._cylinder_visualizer.visualize(
+            translations=translations,
+            orientations=orientations,
+            scales=scales,
+        )
+
+    def disable_visualizer(self):
+        if hasattr(self, "_cylinder_visualizer"):
+            self._cylinder_visualizer.set_visibility(False)
+
+    @staticmethod
+    def _orient_z_axis(direction: torch.Tensor) -> torch.Tensor:
+        """Return quaternions rotating a marker's +Z axis onto ``direction``."""
+        cross = torch.stack(
+            (-direction[:, 1], direction[:, 0], torch.zeros_like(direction[:, 0])),
+            dim=-1,
+        )
+        quaternions = torch.cat(((1.0 + direction[:, 2]).unsqueeze(-1), cross), dim=-1)
+
+        antiparallel = direction[:, 2] < -1.0 + 1.0e-6
+        quaternions[antiparallel] = torch.tensor(
+            [0.0, 1.0, 0.0, 0.0], device=direction.device, dtype=direction.dtype
+        )
+        return torch.nn.functional.normalize(quaternions, dim=-1)
 
     def get_points_penetration_offset(self, points: torch.Tensor) -> torch.Tensor:
         if self.cylinders is None:

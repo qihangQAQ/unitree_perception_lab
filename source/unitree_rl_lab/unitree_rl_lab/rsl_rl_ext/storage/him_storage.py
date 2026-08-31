@@ -1,4 +1,4 @@
-"""Rollout storage carrying the next physical observation for Old-HIM."""
+"""RSL-RL rollout storage carrying the next physical observation for Old-HIM."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import torch
 from rsl_rl.storage import RolloutStorage
 
 
-class PerceptionProRolloutStorage(RolloutStorage):
-    """Standard feed-forward PPO storage plus the next 96-D Old-HIM target."""
+class HimRolloutStorage(RolloutStorage):
+    """Standard feed-forward PPO storage plus the next Old-HIM target."""
 
     class Transition(RolloutStorage.Transition):
         def __init__(self):
@@ -33,7 +33,7 @@ class PerceptionProRolloutStorage(RolloutStorage):
 
     def add_transitions(self, transition: Transition):
         if transition.next_auxiliary is None or transition.next_state_valid is None:
-            raise ValueError("Perception-pro transition is missing its Old-HIM supervision.")
+            raise ValueError("HIM transition is missing its next-state supervision.")
         self.next_auxiliary[self.step].copy_(transition.next_auxiliary)
         self.next_state_valid[self.step].copy_(transition.next_state_valid)
         super().add_transitions(transition)

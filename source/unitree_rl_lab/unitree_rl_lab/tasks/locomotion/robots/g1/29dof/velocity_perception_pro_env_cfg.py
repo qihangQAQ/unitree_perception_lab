@@ -25,7 +25,24 @@ CROSS_STEPPING_STONES_TERRAIN = "cross_stepping_stones"
 STEPPING_STONES_TERRAIN = "stepping_stones"
 GAP_TERRAIN = "gap"
 DOWNHILL_TERRAIN_TYPES = ("stairs_down",)
-
+PRECISE_FOOTHOLD_TERRAINS = (
+    CROSS_STEPPING_STONES_TERRAIN,
+    STEPPING_STONES_TERRAIN,
+    GAP_TERRAIN,
+)
+STEPPING_STONE_TERRAINS = (
+    CROSS_STEPPING_STONES_TERRAIN,
+    STEPPING_STONES_TERRAIN,
+)
+CARDINAL_YAWS = (0.0, 1.57, 3.14, -1.57)
+ZERO_ROOT_VELOCITY_RANGE = {
+    "x": (0.0, 0.0),
+    "y": (0.0, 0.0),
+    "z": (0.0, 0.0),
+    "roll": (0.0, 0.0),
+    "pitch": (0.0, 0.0),
+    "yaw": (0.0, 0.0),
+}
 
 @configclass
 class RobotSceneCfg(InteractiveSceneCfg):
@@ -187,7 +204,12 @@ class EventCfg:
                 },
             },
             "terrain_specific_yaw": {
-                CROSS_STEPPING_STONES_TERRAIN: (0.0, 1.57, 3.14, -1.57),
+                terrain_type: CARDINAL_YAWS
+                for terrain_type in PRECISE_FOOTHOLD_TERRAINS
+            },
+            "terrain_specific_velocity_range": {
+                terrain_type: ZERO_ROOT_VELOCITY_RANGE
+                for terrain_type in PRECISE_FOOTHOLD_TERRAINS
             },
         },
     )
@@ -210,10 +232,16 @@ class EventCfg:
         },
     )
     push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
+        func=mdp.push_by_setting_velocity_terrain_specific,
         mode="interval",
         interval_range_s=(10.0, 15.0),
-        params={"velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)}},
+        params={
+            "velocity_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)},
+            "terrain_specific_velocity_range": {
+                terrain_type: ZERO_ROOT_VELOCITY_RANGE
+                for terrain_type in PRECISE_FOOTHOLD_TERRAINS
+            },
+        },
     )
 
 
@@ -241,22 +269,22 @@ class CommandsCfg:
                 zero_prob=(0.4, 0.8, 0.4),
             ),
             CROSS_STEPPING_STONES_TERRAIN: mdp.TerrainAwareUniformVelocityCommandCfg.Ranges(
-                lin_vel_x=(0.0, 1.0),
+                lin_vel_x=(0.8, 1.5),
                 lin_vel_y=(0.0, 0.0),
                 ang_vel_z=(0.0, 0.0),
-                zero_prob=(0.5, 0.9, 0.5),
+                zero_prob=(0.0, 1.0, 1.0),
             ),
             STEPPING_STONES_TERRAIN: mdp.TerrainAwareUniformVelocityCommandCfg.Ranges(
-                lin_vel_x=(0.0, 1.5),
+                lin_vel_x=(0.8, 1.5),
                 lin_vel_y=(0.0, 0.0),
-                ang_vel_z=(-1.0, 1.0),
-                zero_prob=(0.5, 0.9, 0.5),
+                ang_vel_z=(0.0, 0.0),
+                zero_prob=(0.0, 1.0, 1.0),
             ),
             GAP_TERRAIN: mdp.TerrainAwareUniformVelocityCommandCfg.Ranges(
-                lin_vel_x=(0.0, 1.5),
+                lin_vel_x=(0.8, 1.5),
                 lin_vel_y=(0.0, 0.0),
-                ang_vel_z=(-1.0, 1.0),
-                zero_prob=(0.5, 0.9, 0.5),
+                ang_vel_z=(0.0, 0.0),
+                zero_prob=(0.0, 1.0, 1.0),
             ),
         },
     )
@@ -536,6 +564,22 @@ class RewardsCfg:
             "command_name": "base_velocity",
             "threshold": 0.4,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll.*"),
+        },
+    )
+    feet_unhold = RewTerm(
+        func=mdp.feet_unhold_reward,
+        weight=-1.0,
+        params={
+            "contact_sensor_cfg": SceneEntityCfg(
+                "contact_forces", body_names=".*ankle_roll.*"
+            ),
+            "left_foot_height_scanner_cfg": SceneEntityCfg(
+                "left_foot_height_scanner"
+            ),
+            "right_foot_height_scanner_cfg": SceneEntityCfg(
+                "right_foot_height_scanner"
+            ),
+            "terrain_types": STEPPING_STONE_TERRAINS,
         },
     )
     feet_slide = RewTerm(

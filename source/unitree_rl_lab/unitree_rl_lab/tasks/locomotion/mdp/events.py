@@ -27,9 +27,13 @@ def reset_root_state_uniform_terrain_aware(
     ]
     | None = None,
     terrain_specific_yaw: dict[str, tuple[float, ...]] | None = None,
+    terrain_specific_velocity_range: dict[
+        str, dict[str, tuple[float, float]]
+    ]
+    | None = None,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ):
-    """Reset root state with position and yaw overrides by assigned terrain."""
+    """Reset root state with pose and velocity overrides by assigned terrain."""
     asset: RigidObject | Articulation = env.scene[asset_cfg.name]
     env_ids = torch.as_tensor(env_ids, device=asset.device, dtype=torch.long)
     root_states = asset.data.default_root_state[env_ids].clone()
@@ -115,11 +119,94 @@ def reset_root_state_uniform_terrain_aware(
         (env_ids.numel(), len(velocity_keys)),
         device=asset.device,
     )
+
+    for terrain_type, component_ranges in (
+        terrain_specific_velocity_range or {}
+    ).items():
+        terrain_mask = terrain_type_mask(
+            env,
+            (terrain_type,),
+            env_ids,
+            use_assigned_terrain=True,
+        )
+        count = int(terrain_mask.sum().item())
+        if count == 0:
+            continue
+        for component_index, component_name in enumerate(velocity_keys):
+            if component_name not in component_ranges:
+                continue
+            component_range = component_ranges[component_name]
+            velocity_samples[terrain_mask, component_index] = (
+                math_utils.sample_uniform(
+                    float(component_range[0]),
+                    float(component_range[1]),
+                    (count,),
+                    device=asset.device,
+                )
+            )
+
     velocities = root_states[:, 7:13] + velocity_samples
 
     asset.write_root_pose_to_sim(
         torch.cat([positions, orientations], dim=-1), env_ids=env_ids
     )
+    asset.write_root_velocity_to_sim(velocities, env_ids=env_ids)
+
+
+def push_by_setting_velocity_terrain_specific(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    velocity_range: dict[str, tuple[float, float]],
+    terrain_specific_velocity_range: dict[
+        str, dict[str, tuple[float, float]]
+    ]
+    | None = None,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    """Apply velocity pushes with optional overrides by assigned terrain."""
+    asset: RigidObject | Articulation = env.scene[asset_cfg.name]
+    env_ids = torch.as_tensor(env_ids, device=asset.device, dtype=torch.long)
+    velocity_keys = ("x", "y", "z", "roll", "pitch", "yaw")
+    velocity_ranges = torch.tensor(
+        [velocity_range.get(key, (0.0, 0.0)) for key in velocity_keys],
+        device=asset.device,
+    )
+    velocity_deltas = math_utils.sample_uniform(
+        velocity_ranges[:, 0],
+        velocity_ranges[:, 1],
+        (env_ids.numel(), len(velocity_keys)),
+        device=asset.device,
+    )
+
+    for terrain_type, component_ranges in (
+        terrain_specific_velocity_range or {}
+    ).items():
+        terrain_mask = terrain_type_mask(
+            env,
+            (terrain_type,),
+            env_ids,
+            use_assigned_terrain=True,
+        )
+        count = int(terrain_mask.sum().item())
+        if count == 0:
+            continue
+        terrain_ranges = torch.tensor(
+            [
+                component_ranges.get(
+                    key, velocity_range.get(key, (0.0, 0.0))
+                )
+                for key in velocity_keys
+            ],
+            device=asset.device,
+        )
+        velocity_deltas[terrain_mask] = math_utils.sample_uniform(
+            terrain_ranges[:, 0],
+            terrain_ranges[:, 1],
+            (count, len(velocity_keys)),
+            device=asset.device,
+        )
+
+    velocities = asset.data.root_vel_w[env_ids].clone() + velocity_deltas
     asset.write_root_velocity_to_sim(velocities, env_ids=env_ids)
 
 

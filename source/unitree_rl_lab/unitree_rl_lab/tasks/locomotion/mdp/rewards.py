@@ -9,7 +9,7 @@ except ImportError:
     from isaaclab.utils.math import quat_rotate_inverse as quat_apply_inverse
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.sensors import ContactSensor
+from isaaclab.sensors import ContactSensor, RayCaster
 
 from .commands.velocity_command import terrain_type_mask
 
@@ -203,6 +203,49 @@ def feet_stumble(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg) -> torch.Te
     # Penalize feet hitting vertical surfaces
     reward = torch.any(forces_xy > 4 * forces_z, dim=1).float()
     return reward
+
+
+def feet_unhold_reward(
+    env: ManagerBasedRLEnv,
+    contact_sensor_cfg: SceneEntityCfg,
+    left_foot_height_scanner_cfg: SceneEntityCfg,
+    right_foot_height_scanner_cfg: SceneEntityCfg,
+    offset: float = 0.06,
+    terrain_types: tuple[str, ...] | None = None,
+) -> torch.Tensor:
+    """Penalize a contacting foot when its scanned sole is not fully supported."""
+    contact_sensor: ContactSensor = env.scene.sensors[contact_sensor_cfg.name]
+    contact_forces = contact_sensor.data.net_forces_w_history[
+        :, :, contact_sensor_cfg.body_ids, :
+    ]
+    feet_contact = torch.max(
+        torch.linalg.vector_norm(contact_forces, dim=-1), dim=1
+    ).values > 0.5
+
+    left_scanner: RayCaster = env.scene.sensors[
+        left_foot_height_scanner_cfg.name
+    ]
+    left_unsupported = torch.abs(
+        left_scanner.data.pos_w[:, 2].unsqueeze(1)
+        - left_scanner.data.ray_hits_w[..., 2]
+        - offset
+    ) > 0.03
+    left_penalty = left_unsupported.float().mean(dim=-1) * feet_contact[:, 0]
+
+    right_scanner: RayCaster = env.scene.sensors[
+        right_foot_height_scanner_cfg.name
+    ]
+    right_unsupported = torch.abs(
+        right_scanner.data.pos_w[:, 2].unsqueeze(1)
+        - right_scanner.data.ray_hits_w[..., 2]
+        - offset
+    ) > 0.03
+    right_penalty = right_unsupported.float().mean(dim=-1) * feet_contact[:, 1]
+
+    penalty = left_penalty + right_penalty
+    if terrain_types:
+        penalty *= terrain_type_mask(env, terrain_types)
+    return penalty
 
 
 def feet_height_body(

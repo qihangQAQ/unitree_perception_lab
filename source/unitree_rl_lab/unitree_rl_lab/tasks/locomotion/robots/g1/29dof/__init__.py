@@ -40,6 +40,22 @@ gym.register(
 )
 
 
+# Perception baseline with SSR imagined footholds and Exp2 foot-edge penetration.
+gym.register(
+    id="Unitree-G1-29dof-Velocity-perception-predict",
+    entry_point="unitree_rl_lab.envs:FootholdTerrainLoggingManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_perception_predict_env_cfg:RobotEnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_perception_predict_env_cfg:RobotPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": (
+            "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_perception_predict_cfg:"
+            "UnitreePerceptionPredictRunnerCfg"
+        ),
+    },
+)
+
+
 # 高程图感知独立消融：三个实验分别直接继承 Perception 基线
 gym.register(
     id="Unitree-G1-29dof-Velocity-perception-Exp1",

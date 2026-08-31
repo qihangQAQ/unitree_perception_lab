@@ -28,7 +28,7 @@ class VirtualObstacleBase(ABC):
         raise NotImplementedError
 
     def visualize(self):
-        """Virtual-obstacle visualization is intentionally disabled for training."""
+        """Visualize the obstacle when the concrete implementation supports it."""
 
     def disable_visualizer(self):
-        """Virtual-obstacle visualization is intentionally disabled for training."""
+        """Hide the obstacle visualizer when the concrete implementation supports it."""
