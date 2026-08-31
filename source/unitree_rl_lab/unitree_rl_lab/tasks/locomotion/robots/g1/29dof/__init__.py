@@ -140,3 +140,18 @@ gym.register(
         ),
     },
 )
+
+
+# Depth upgrade: terrain2, revised fall handling, and yaw tracking.
+gym.register(
+    id="Unitree-G1-29dof-Velocity-depth-Upgrade",
+    entry_point="unitree_rl_lab.envs:TerrainLoggingManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_depth_upgrade_env_cfg:RobotEnvCfg",
+        "play_env_cfg_entry_point": f"{__name__}.velocity_depth_upgrade_env_cfg:RobotPlayEnvCfg",
+        "rsl_rl_cfg_entry_point": (
+            "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_depth_cfg:UnitreeDepthRunnerCfg"
+        ),
+    },
+)

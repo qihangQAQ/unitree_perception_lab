@@ -57,8 +57,9 @@ ZERO_ROOT_VELOCITY_RANGE = {
 
 # G1 visual links used by InstinctLab's perceptive tasks. Keeping the robot
 # meshes in the ray-cast targets reproduces self-occlusion in the depth image.
+# The camera is attached to torso_link and its origin lies inside that visual
+# mesh, so torso_link itself must be excluded or every ray immediately self-hits.
 G1_29DOF_LINKS = (
-    "torso_link",
     "left_shoulder_pitch_link",
     "left_shoulder_roll_link",
     "left_shoulder_yaw_link",
@@ -108,7 +109,7 @@ class RobotSceneCfg(InteractiveSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
-        terrain_generator=UPGRADE_TERRAIN2,
+        terrain_generator=UPGRADE_TERRAIN1,
         max_init_terrain_level=2,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(

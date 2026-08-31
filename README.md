@@ -30,14 +30,23 @@ G1 感知任务使用以下观测：
 | `Unitree-G1-29dof-Velocity-perception-Exp1` | 特权观测消融：Actor 改用与 Critic 相同的 404 维完整特权观测，作为性能上界对照。 |
 | `Unitree-G1-29dof-Velocity-perception-Exp2` | 地形边缘约束消融：在感知基线上加入虚拟地形边缘、脚踝体积点检测和穿透惩罚。 |
 | `Unitree-G1-29dof-Velocity-perception-Exp3` | 下楼奖励消融：在感知基线上加入下楼前进奖励和停滞惩罚。 |
-| `Unitree-G1-29dof-Velocity-perception-predict` | 在感知基线上加入 SSR 风格的落脚点分布预测与楼梯足底支撑奖励，并叠加 Exp2 的地形边缘穿透惩罚。落脚点网络仅用于训练奖励，不改变 Actor 的 283 维部署接口。 |
+| `Unitree-G1-29dof-Velocity-perception-predict` | 在Unitree-velocity-perception的基础上，加入SSR落足点预测和虚拟膨胀体机制。目前在基础感知（网络结构整体并不复杂）任务中取得了较好的实验效果，可以作为elevation-mapping任务的baseline |
 | `Unitree-G1-29dof-Velocity-perception-pro` | `5 x 96` 本体历史 + `17 x 11` 高程图；Multi-Head Cross-Attention + Old-HIM + 4-expert MoE；融合后的 Actor 输入为 147 维，Critic 为 404 维。 |
 | `Unitree-G1-29dof-Velocity-perception-pro-Upgrade` | 继承 perception-pro，移除遍地梅花桩，使用姿态与交叉梅花桩掉落终止，并加入 yaw 角速度误差惩罚。 |
 | `Unitree-G1-29dof-Velocity-depth` | `5 x 96` 本体历史 + `16 x 24 x 1` 深度图（384 维）；CNN + Multi-Head Cross-Attention + Old-HIM + 4-expert MoE；融合后的 Actor 输入为 147 维，Critic 为 404 维。 |
+| `Unitree-G1-29dof-Velocity-depth-Upgrade` | 继承 depth，显式使用 Upgrade-terrain2，使用姿态与交叉梅花桩掉落终止，并加入 yaw 角速度误差惩罚。 |
 
 `perception-pro` 和 `depth` 共用项目级 `unitree_rl_lab.rsl_rl_ext` 实现。扩展按 `algorithms`、
 `modules`、`runners`、`storage` 和 `exporters` 分层，两个任务的 agent 配置只负责选择高程图或
 深度图输入适配器；上游 `rsl_rl` 仍作为唯一训练后端，不在项目中复制其源码。
+
+## 任务总结
+| 任务 | 效果分析 |
+|---|---|
+|Unitree-velocity-perception|经过修改，解决了action_rate爆炸的问题；但是存在下楼滑步下楼的风险|
+|Unitree-velocity-perception-predict（基础感知任务）|在Unitree-velocity-perception的基础上，加入SSR落足点预测和虚拟膨胀体机制。目前在基础感知（网络结构整体并不复杂）任务中取得了较好的实验效果，可以作为elevation-mapping任务的baseline|
+|Unitree-velocity-perception-pro（进阶感知任务）|升级整体网络架构（CNN +Multi-Head cross-attention + MOE HIM ）目前在基础地形（Upgrade-terrain1）上表现良好，可以作为升级架构baseline，在进阶地形（Upgrade-terrain2）上，地形等级很高，但是表现一般，正在开发中|
+
 
 ## 其他任务
 
@@ -100,6 +109,9 @@ Train a structured cross-attention policy:
 
 # Depth + Old-HIM + cross-attention + MoE
 ./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity-depth
+
+# depth + terrain2/revised termination/yaw objectives
+./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity-depth-Upgrade
 ```
 
 Run a trained policy by replacing `-t` with `-p`:
@@ -108,6 +120,7 @@ Run a trained policy by replacing `-t` with `-p`:
 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-perception-pro
 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-perception-pro-Upgrade
 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-depth
+./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-depth-Upgrade
 ```
 
 ### Motion-imitation data preparation
