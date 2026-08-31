@@ -98,7 +98,7 @@ from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
 @dataclass(frozen=True)
 class TerrainSelection:
-    """Resolved terrain cell selected from a task's original terrain grid."""
+    """Resolved terrain cell selected from the play-only terrain grid."""
 
     name: str
     level: int
@@ -230,44 +230,8 @@ def _velocity_for_pressed_keys(keys: set[str]) -> tuple[float, float, float]:
     return command[0], command[1], command[2]
 
 
-def _terrain_column_for_name(generator_cfg, terrain_name: str) -> int:
-    """Return the first grid column assigned to a sub-terrain by TerrainGenerator."""
-    terrain_items = list(generator_cfg.sub_terrains.items())
-    available_names = [name for name, _ in terrain_items]
-    if terrain_name not in available_names:
-        raise ValueError(
-            f"Unknown terrain {terrain_name!r}. Available terrains for this task: {', '.join(available_names)}"
-        )
-
-    proportions = [float(cfg.proportion) for _, cfg in terrain_items]
-    proportion_sum = sum(proportions)
-    if proportion_sum <= 0.0:
-        raise ValueError("Terrain proportions must have a positive sum.")
-    normalized = [value / proportion_sum for value in proportions]
-
-    assigned_names = []
-    for column in range(generator_cfg.num_cols):
-        sample = column / generator_cfg.num_cols + 0.001
-        cumulative = 0.0
-        assigned_name = terrain_items[-1][0]
-        for (name, _), proportion in zip(terrain_items, normalized):
-            cumulative += proportion
-            if sample < cumulative:
-                assigned_name = name
-                break
-        assigned_names.append(assigned_name)
-        if assigned_name == terrain_name:
-            return column
-
-    represented_names = ", ".join(dict.fromkeys(assigned_names))
-    raise ValueError(
-        f"Terrain {terrain_name!r} exists in the config but is not assigned a column in the "
-        f"{generator_cfg.num_cols}-column grid. Represented terrains: {represented_names}"
-    )
-
-
 def _configure_terrain_selection(env_cfg) -> TerrainSelection | None:
-    """Validate CLI terrain arguments and keep the selected cell fixed during play."""
+    """Generate only the selected terrain type and keep its requested level fixed."""
     if args_cli.terrain is None:
         return None
     if args_cli.num_envs not in (None, 1):
@@ -280,15 +244,25 @@ def _configure_terrain_selection(env_cfg) -> TerrainSelection | None:
         raise ValueError(f"Task {args_cli.task!r} does not use a generated terrain grid.")
 
     num_rows = int(generator_cfg.num_rows)
-    num_cols = int(generator_cfg.num_cols)
     if args_cli.level >= num_rows:
         raise ValueError(
             f"Terrain level {args_cli.level} is out of range for task {args_cli.task!r}; "
             f"expected 0 through {num_rows - 1}."
         )
 
-    column = _terrain_column_for_name(generator_cfg, args_cli.terrain)
-    # Rows must retain curriculum ordering for --level to refer to the task's normal level index.
+    available_names = list(generator_cfg.sub_terrains)
+    if args_cli.terrain not in generator_cfg.sub_terrains:
+        raise ValueError(
+            f"Unknown terrain {args_cli.terrain!r}. Available terrains for this task: "
+            f"{', '.join(available_names)}"
+        )
+
+    # Keep every curriculum row so --level retains the task's normal difficulty
+    # semantics, but prune all unselected columns before TerrainImporter runs.
+    selected_cfg = generator_cfg.sub_terrains[args_cli.terrain]
+    selected_cfg.proportion = 1.0
+    generator_cfg.sub_terrains = {args_cli.terrain: selected_cfg}
+    generator_cfg.num_cols = 1
     generator_cfg.curriculum = True
     terrain_cfg.max_init_terrain_level = args_cli.level
     env_cfg.scene.num_envs = 1
@@ -298,7 +272,7 @@ def _configure_terrain_selection(env_cfg) -> TerrainSelection | None:
     if curriculum_cfg is not None and hasattr(curriculum_cfg, "terrain_levels"):
         curriculum_cfg.terrain_levels = None
 
-    return TerrainSelection(args_cli.terrain, args_cli.level, column, num_rows, num_cols)
+    return TerrainSelection(args_cli.terrain, args_cli.level, 0, num_rows, 1)
 
 
 def _pin_terrain_cell(unwrapped_env, selection: TerrainSelection | None):

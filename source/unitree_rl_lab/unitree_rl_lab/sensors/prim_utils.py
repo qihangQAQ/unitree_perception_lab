@@ -3,11 +3,58 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
+from collections import deque
+from collections.abc import Callable
+
 import omni.physics.tensors.impl.api as physx
 import torch
 from isaaclab.utils.math import convert_quat
 from isaacsim.core.prims import XFormPrim
-from pxr import Usd, UsdGeom
+from isaacsim.core.utils.stage import get_current_stage
+from pxr import Sdf, Usd, UsdGeom
+
+
+def get_all_matching_child_prims(
+    prim_path: str | Sdf.Path,
+    predicate: Callable[[Usd.Prim], bool] = lambda _: True,
+    depth: int | None = None,
+    stage: Usd.Stage | None = None,
+    traverse_instance_prims: bool = True,
+) -> list[Usd.Prim]:
+    """Return matching descendants, optionally traversing USD instance proxies.
+
+    Isaac Lab 2.3's helper only calls ``GetChildren()``, so it stops at the
+    instanceable ``visuals`` Xforms used by the G1 asset.  The actual ``Mesh``
+    prims are instance proxies and must be requested explicitly from USD.
+    """
+    if stage is None:
+        stage = get_current_stage()
+
+    prim_path = str(prim_path)
+    if not prim_path.startswith("/"):
+        raise ValueError(f"Prim path '{prim_path}' is not global. It must start with '/'.")
+    if depth is not None and depth <= 0:
+        raise ValueError(f"Depth must be bigger than zero, got {depth}.")
+
+    root_prim = stage.GetPrimAtPath(prim_path)
+    if not root_prim.IsValid():
+        raise ValueError(f"Prim at path '{prim_path}' is not valid.")
+
+    prims_to_visit = deque([(root_prim, 0)])
+    matching_prims = []
+    while prims_to_visit:
+        prim, current_depth = prims_to_visit.popleft()
+        if predicate(prim):
+            matching_prims.append(prim)
+
+        if depth is None or current_depth < depth:
+            if traverse_instance_prims:
+                children = prim.GetFilteredChildren(Usd.TraverseInstanceProxies())
+            else:
+                children = prim.GetChildren()
+            prims_to_visit.extend((child, current_depth + 1) for child in children)
+
+    return matching_prims
 
 
 def obtain_world_pose_from_view(

@@ -14,10 +14,11 @@ from .custom_terrain import (
     HfNoisyInvertedPyramidSlopedTerrainCfg,
     HfNoisyPyramidSlopedTerrainCfg,
     HfSingleGapTerrainCfg,
-    HfSteppingStonesTerrainCfg,
     HfVariableInvertedPyramidStairsTerrainCfg,
     HfVariablePyramidStairsTerrainCfg,
 )
+
+
 @height_field_to_mesh
 def positive_discrete_obstacles_terrain(
     difficulty: float, cfg: PositiveDiscreteObstaclesTerrainCfg
@@ -127,43 +128,43 @@ UPGRADE_TERRAIN2 = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
     num_rows=10,
-    num_cols=16,
+    num_cols=13,
     horizontal_scale=0.05,
     vertical_scale=0.005,
     slope_threshold=0.9,
     use_cache=False,
     sub_terrains={
-        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=2.0 / 16.0),
+        "flat": terrain_gen.MeshPlaneTerrainCfg(proportion=2.0 / 13.0),
         "stairs_up": HfVariableInvertedPyramidStairsTerrainCfg(
-            proportion=2.0 / 16.0,
+            proportion=2.0 / 13.0,
             step_height_range=(0.05, 0.25),
             step_width_pixels_range=(10, 5),
             platform_width=2.0,
             border_width=0.5,
         ),
         "stairs_down": HfVariablePyramidStairsTerrainCfg(
-            proportion=2.0 / 16.0,
+            proportion=2.0 / 13.0,
             step_height_range=(0.05, 0.25),
             step_width_pixels_range=(10, 5),
             platform_width=2.0,
             border_width=0.5,
         ),
         "noisy_slope_up": HfNoisyPyramidSlopedTerrainCfg(
-            proportion=1.0 / 16.0,
+            proportion=1.0 / 13.0,
             slope_range=(0.1, 0.4),
             noise_range=(0.01, 0.03),
             noise_step=0.01,
             platform_width=2.0,
         ),
         "noisy_slope_down": HfNoisyInvertedPyramidSlopedTerrainCfg(
-            proportion=1.0 / 16.0,
+            proportion=1.0 / 13.0,
             slope_range=(0.15, 0.4),
             noise_range=(0.01, 0.03),
             noise_step=0.01,
             platform_width=2.0,
         ),
         "cross_stepping_stones": HfCrossSteppingStonesTerrainCfg(
-            proportion=3.0 / 16.0,
+            proportion=3.0 / 13.0,
             stone_height_max=0.05,
             stone_width_range=(0.25, 0.5),
             stone_distance_range=(0.1, 0.35),
@@ -172,24 +173,15 @@ UPGRADE_TERRAIN2 = terrain_gen.TerrainGeneratorCfg(
             border_width=0.5,
             num_stone_rows=2,
         ),
-        "stepping_stones": HfSteppingStonesTerrainCfg(
-            proportion=3.0 / 16.0,
-            stone_height_max=0.05,
-            stone_width_range=(0.25, 0.5),
-            stone_distance_range=(0.1, 0.35),
-            holes_depth=(-0.3, -0.5),
-            border_width=0.5,
-            platform_width=2.0,
-        ),
         "gap": HfSingleGapTerrainCfg(
-            proportion=1.0 / 16.0,
+            proportion=1.0 / 13.0,
             platform_width=2.0,
             gap_width_pixels_range=(3, 10),
             gap_depth_range=(0.2, 1.0),
             step_height_range=(0.03, 0.1),
         ),
         "discrete_obstacles": PositiveDiscreteObstaclesTerrainCfg(
-            proportion=1.0 / 16.0,
+            proportion=1.0 / 13.0,
             obstacle_width_range=(0.3, 1.0),
             obstacle_height_range=(0.05, 0.30),
             num_obstacles=30,

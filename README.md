@@ -32,6 +32,7 @@ G1 感知任务使用以下观测：
 | `Unitree-G1-29dof-Velocity-perception-Exp3` | 下楼奖励消融：在感知基线上加入下楼前进奖励和停滞惩罚。 |
 | `Unitree-G1-29dof-Velocity-perception-predict` | 在感知基线上加入 SSR 风格的落脚点分布预测与楼梯足底支撑奖励，并叠加 Exp2 的地形边缘穿透惩罚。落脚点网络仅用于训练奖励，不改变 Actor 的 283 维部署接口。 |
 | `Unitree-G1-29dof-Velocity-perception-pro` | `5 x 96` 本体历史 + `17 x 11` 高程图；Multi-Head Cross-Attention + Old-HIM + 4-expert MoE；融合后的 Actor 输入为 147 维，Critic 为 404 维。 |
+| `Unitree-G1-29dof-Velocity-perception-pro-Upgrade` | 继承 perception-pro，移除遍地梅花桩，使用姿态与交叉梅花桩掉落终止，并加入 yaw 角速度误差惩罚。 |
 | `Unitree-G1-29dof-Velocity-depth` | `5 x 96` 本体历史 + `16 x 24 x 1` 深度图（384 维）；CNN + Multi-Head Cross-Attention + Old-HIM + 4-expert MoE；融合后的 Actor 输入为 147 维，Critic 为 404 维。 |
 
 `perception-pro` 和 `depth` 共用项目级 `unitree_rl_lab.rsl_rl_ext` 实现。扩展按 `algorithms`、
@@ -94,6 +95,9 @@ Train a structured cross-attention policy:
 # Height-map + Old-HIM + cross-attention + MoE
 ./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity-perception-pro
 
+# perception-pro + revised terrain/termination/yaw objectives
+./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity-perception-pro-Upgrade
+
 # Depth + Old-HIM + cross-attention + MoE
 ./unitree_rl_lab.sh -t --task Unitree-G1-29dof-Velocity-depth
 ```
@@ -102,6 +106,7 @@ Run a trained policy by replacing `-t` with `-p`:
 
 ```bash
 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-perception-pro
+./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-perception-pro-Upgrade
 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-depth
 ```
 

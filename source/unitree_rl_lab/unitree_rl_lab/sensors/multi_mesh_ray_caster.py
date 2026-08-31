@@ -34,6 +34,7 @@ from unitree_rl_lab.utils.warp import convert_to_warp_mesh, raycast_dynamic_mesh
 
 from .multi_mesh_ray_caster_data import MultiMeshRayCasterData
 from .prim_utils import (
+    get_all_matching_child_prims,
     obtain_world_pose_from_view,
     resolve_prim_pose,
     resolve_prim_scale,
@@ -209,19 +210,18 @@ class MultiMeshRayCaster(RayCaster):
                     loaded_vertices.append(None)
                     continue
 
-                mesh_prims = sim_utils.get_all_matching_child_prims(
+                mesh_prims = get_all_matching_child_prims(
                     target_prim.GetPath(), lambda prim: prim.GetTypeName() in PRIMITIVE_MESH_TYPES + ["Mesh"]
                 )
                 if len(mesh_prims) == 0:
-                    warn_msg = (
+                    error_msg = (
                         f"No mesh prims found at path: {target_prim.GetPath()} with supported types:"
                         f" {PRIMITIVE_MESH_TYPES + ['Mesh']}"
-                        " Skipping this target."
+                        ". The target cannot be used for ray-casting."
                     )
-                    for prim in sim_utils.get_all_matching_child_prims(target_prim.GetPath(), lambda prim: True):
-                        warn_msg += f"\n - Available prim '{prim.GetPath()}' of type '{prim.GetTypeName()}'"
-                    carb.log_warn(warn_msg)
-                    continue
+                    for prim in get_all_matching_child_prims(target_prim.GetPath(), lambda prim: True):
+                        error_msg += f"\n - Available prim '{prim.GetPath()}' of type '{prim.GetTypeName()}'"
+                    raise RuntimeError(error_msg)
 
                 trimesh_meshes = []
 
@@ -283,6 +283,9 @@ class MultiMeshRayCaster(RayCaster):
                         f" {len(trimesh_mesh.vertices)} vertices and {len(trimesh_mesh.faces)} faces."
                     )
 
+            if len(wp_mesh_ids) == 0:
+                raise RuntimeError(f"No usable meshes were created for ray-cast target: {target_prim_path}")
+
             if is_global_prim:
                 # reference the mesh for each environment to ray cast against
                 multi_mesh_ids[target_prim_path] = [wp_mesh_ids] * self._num_envs
@@ -290,6 +293,11 @@ class MultiMeshRayCaster(RayCaster):
             else:
                 # split up the meshes for each environment. Little bit ugly, since
                 # the current order is interleaved (env1_obj1, env1_obj2, env2_obj1, env2_obj2, ...)
+                if len(wp_mesh_ids) % self._num_envs != 0:
+                    raise RuntimeError(
+                        f"Ray-cast target '{target_prim_path}' produced {len(wp_mesh_ids)} meshes for "
+                        f"{self._num_envs} environments; the meshes cannot be partitioned evenly."
+                    )
                 multi_mesh_ids[target_prim_path] = []
                 mesh_idx = 0
                 n_meshes_per_env = len(wp_mesh_ids) // self._num_envs

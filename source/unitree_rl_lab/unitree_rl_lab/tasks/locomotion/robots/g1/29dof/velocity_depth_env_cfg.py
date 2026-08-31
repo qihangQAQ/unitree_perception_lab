@@ -12,6 +12,7 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.markers import VisualizationMarkersCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
 from isaaclab.utils import configclass
@@ -190,6 +191,20 @@ class RobotSceneCfg(InteractiveSceneCfg):
         depth_clipping_behavior="zero",
         max_distance=4.0,
         debug_vis=False,
+        visualizer_cfg=VisualizationMarkersCfg(
+            prim_path="/Visuals/RayCasterCamera",
+            markers={
+                **{
+                    f"attn_{index}": sim_utils.SphereCfg(
+                        radius=0.02,
+                        visual_material=sim_utils.PreviewSurfaceCfg(
+                            diffuse_color=(index / 9.0, 0.0, 1.0 - index / 9.0),
+                        ),
+                    )
+                    for index in range(10)
+                }
+            },
+        ),
     )
     contact_forces = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/.*",
@@ -827,6 +842,7 @@ class RobotPlayEnvCfg(RobotEnvCfg):
 
         self.scene.num_envs = 16
         self.scene.raycaster_camera.debug_vis = True
+        self.scene.height_scanner.debug_vis = False
         self.curriculum.terrain_levels = None
 
         self.commands.base_velocity.rel_standing_envs = 0.0
