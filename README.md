@@ -46,6 +46,8 @@ G1 感知任务使用以下观测：
 |Unitree-velocity-perception|经过修改，解决了action_rate爆炸的问题；但是存在下楼滑步下楼的风险|
 |Unitree-velocity-perception-predict（基础感知任务）|在Unitree-velocity-perception的基础上，加入SSR落足点预测和虚拟膨胀体机制。目前在基础感知（网络结构整体并不复杂）任务中取得了较好的实验效果，可以作为elevation-mapping任务的baseline|
 |Unitree-velocity-perception-pro（进阶感知任务）|升级整体网络架构（CNN +Multi-Head cross-attention + MOE HIM ）目前在基础地形（Upgrade-terrain1）上表现良好，可以作为升级架构baseline，在进阶地形（Upgrade-terrain2）上，地形等级很高，但是表现一般，正在开发中|
+|Unitree-velocity-perception-pro-Upgrade（进阶感知任务）|在pro的基础上针对进阶地形（梅花桩 + gap）进行了调整，整体表现较好，但是步态不是很好，有一些奇怪，但是可以完成任务|
+|Unitree-velocity-Depth（深度图感知任务）|整体网络架构（CNN +Multi-Head cross-attention + MOE HIM ）目前在基础地形（Upgrade-terrain1）上表现良好|
 
 
 ## 其他任务

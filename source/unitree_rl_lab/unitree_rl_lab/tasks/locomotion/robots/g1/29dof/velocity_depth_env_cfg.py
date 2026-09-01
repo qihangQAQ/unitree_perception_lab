@@ -622,7 +622,7 @@ class RewardsCfg:
         weight=1.5,
         params={"command_name": "base_velocity", "std": 0.5},
     )
-    termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
+    # termination_penalty = RewTerm(func=mdp.is_terminated, weight=-200.0)
 
     # ==========================================
     # 2. Base & Posture
@@ -763,6 +763,7 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll.*"),
         },
     )
+    delta_yaw = RewTerm(func=mdp.delta_yaw_reward, weight=-0.5)
     volume_points_penetration = RewTerm(
         func=mdp.volume_points_penetration,
         weight=-1.0,
@@ -779,11 +780,11 @@ class TerminationsCfg:
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     # base_height = DoneTerm(func=mdp.root_height_below_minimum, params={"minimum_height": 0.2})
-    # bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 0.8})
-    base_contact = DoneTerm(
-        func=mdp.illegal_contact,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*torso.*"), "threshold": 1.0},
-    )
+    bad_orientation = DoneTerm(func=mdp.bad_orientation, params={"limit_angle": 0.8})
+    # base_contact = DoneTerm(
+    #     func=mdp.illegal_contact,
+    #     params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*torso.*"), "threshold": 1.0},
+    # )
 
 
 @configclass
