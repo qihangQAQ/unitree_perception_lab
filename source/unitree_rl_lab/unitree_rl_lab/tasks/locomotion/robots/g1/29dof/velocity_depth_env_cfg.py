@@ -19,7 +19,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
+from unitree_rl_lab.assets.robots.unitree import G1_CFG as ROBOT_CFG
 from unitree_rl_lab.sensors import (
     Grid3dPointsGeneratorCfg,
     MultiMeshRayCasterCameraCfg,
