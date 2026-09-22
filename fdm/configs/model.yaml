@@ -1,0 +1,13 @@
+history_length: 10
+state_dim: 5
+proprio_dim: 96
+command_dim: 3
+horizon: 10
+state_hidden_dim: 64
+state_gru_layers: 2
+height_latent_dim: 512
+command_latent_dim: 16
+command_hidden_dim: 128
+command_gru_layers: 2
+command_timestep: 0.5
+decoder: all_at_once

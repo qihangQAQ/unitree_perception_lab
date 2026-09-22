@@ -1,0 +1,27 @@
+task_name: Unitree-G1-29dof-FDM-Rollout
+policy_checkpoint: logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt
+terrain_usd_path: /home/qihang/code/fdm/exts/fdm/data/Terrains/navigation_terrain_wall_usd_merge_large_single_object_maze.usd
+dataset_root: datasets/fdm_g1/baseline
+num_envs: 256
+seed: 42
+physics_dt: 0.005
+policy_dt: 0.02
+history_timestep: 0.05
+history_length: 10
+command_timestep: 0.5
+prediction_horizon: 10
+max_episode_commands: 150
+policy_observation_corruption: true
+map_shape: [1, 60, 46]
+map_clip: [-1.0, 1.5]
+usd_origin_spacing: 10.0
+split_ratios: [0.8, 0.1, 0.1]
+collision_force_threshold: 1.0
+collision_delay_policy_steps: 1
+command:
+  forward_speed: [0.0, 1.2]
+  yaw_rate: [-1.0, 1.0]
+  correlated_probability: 0.60
+  straight_probability: 0.20
+  turn_probability: 0.15
+  stop_probability: 0.05

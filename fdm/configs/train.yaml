@@ -1,0 +1,13 @@
+collection_rounds: 20
+epochs_per_round: 8
+batch_size: 128
+learning_rate: 0.0003
+weight_decay: 0.00001
+gradient_clip_norm: 1.0
+collision_window_fraction: 0.35
+low_motion_fraction: 0.10
+loss_weights:
+  position: 1.7
+  heading: 1.7
+  collision: 2.0
+  stop_after_collision: 1.0
