@@ -71,6 +71,9 @@ datasets
 *.STL
 **/env.yaml
 
+# Depth frame dumps
+depth_image/
+
 # Mimic
 *.npz
 
