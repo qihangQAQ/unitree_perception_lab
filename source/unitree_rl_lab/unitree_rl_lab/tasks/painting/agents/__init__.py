@@ -1,0 +1,1 @@
+"""Painting PPO configuration."""

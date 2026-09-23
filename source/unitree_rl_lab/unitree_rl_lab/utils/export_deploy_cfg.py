@@ -126,5 +126,39 @@ def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir, observation_group_names: 
     if not isinstance(cfg, dict):
         cfg = class_to_dict(cfg)
     cfg = format_value(cfg)
+    if hasattr(env.cfg.commands, "painting_command"):
+        painting = env.cfg.commands.painting_command
+        # Preserve calibrated offsets and nominal joint angles without the
+        # generic exporter's three-significant-digit rounding.
+        action = env.action_manager.get_term("JointPositionAction")
+        cfg["default_joint_pos"] = asset.data.default_joint_pos[0].detach().cpu().tolist()
+        cfg["actions"]["JointPositionAction"]["offset"] = action._offset[0].detach().cpu().tolist()
+        cfg["actions"]["JointPositionAction"]["scale"] = action._scale[0].detach().cpu().tolist()
+        cfg["commands"]["painting_command"] = {
+            "tcp_body": painting.tcp_body,
+            "tcp_offset": list(painting.tcp_offset),
+            "spray_axis_link": list(painting.spray_axis),
+            "outward_wall_normal": [-1.0, 0.0, 0.0],
+            "lookahead_times": list(painting.lookahead_times),
+            "duration_range": list(painting.duration_range),
+            "speed_range": list(painting.speed_range),
+            "distance_range": list(painting.distance_range),
+            "prepare_time": painting.prepare_time,
+            "catchup_time": painting.catchup_time,
+            "right_probability": painting.right_probability,
+        }
+        cfg["painting_inference"] = {
+            "inputs": {"proprio_history": [1, 465], "trajectory_command": [1, 19]},
+            "outputs": {"actions": [1, 29]},
+            "history_order": "oldest_to_newest",
+            "joint_names": list(asset.joint_names),
+            "proprio_order": ["base_ang_vel", "projected_gravity", "joint_pos_rel", "joint_vel_rel", "last_action"],
+            "angular_velocity_scale": 0.2,
+            "joint_velocity_scale": 0.05,
+            "action_clip": 3.0,
+            "velocity_frame": "ground_relative_expressed_in_current_base",
+            "goal_frame": "current_base",
+            "quaternion_order": "wxyz",
+        }
     with open(filename, "w") as f:
         yaml.dump(cfg, f, default_flow_style=None, sort_keys=False)

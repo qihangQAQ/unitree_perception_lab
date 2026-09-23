@@ -1,0 +1,286 @@
+"""Episode-fixed painting path with a clock independent of episode_length_buf."""
+
+from __future__ import annotations
+
+import math
+
+import torch
+
+import isaaclab.sim as sim_utils
+from isaaclab.managers import CommandTerm, CommandTermCfg
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+from isaaclab.utils import configclass
+
+from unitree_rl_lab.painting.reference import (
+    ending_masks,
+    inverse_rotate,
+    reference_at_time,
+    rotate,
+    trajectory_observation,
+)
+from unitree_rl_lab.painting.trajectories import PaintingPathCfg, import_surface_path, sample_paths
+
+from .events import reset_painting_root
+
+
+class PaintingCommand(CommandTerm):
+    """All consumers query one post-physics reference snapshot per control step.
+
+    Isaac Lab increments common_step_counter before termination and reward
+    evaluation, whereas CommandManager.compute runs afterwards. Reading the
+    common counter here avoids that one-step delay without copying env.step().
+    """
+
+    def __init__(self, cfg: PaintingCommandCfg, env):
+        cfg.path.validate()
+        if not 0 <= cfg.right_probability <= 1:
+            raise ValueError("right_probability must be in [0,1].")
+        for bounds in (cfg.duration_range, cfg.speed_range, cfg.distance_range):
+            if not 0 < bounds[0] <= bounds[1]:
+                raise ValueError(f"Invalid painting sampling range {bounds}.")
+        if cfg.prepare_time < 0 or cfg.catchup_time < 0:
+            raise ValueError("Preparation and catchup times cannot be negative.")
+        if cfg.duration_range[0] <= cfg.prepare_time + cfg.catchup_time:
+            raise ValueError("Episode duration must exceed preparation and catchup times.")
+        if len(cfg.lookahead_times) != 5 or cfg.lookahead_times[0] != 0 or any(
+            b <= a for a, b in zip(cfg.lookahead_times, cfg.lookahead_times[1:])
+        ):
+            raise ValueError("Expected current point and four increasing lookahead times.")
+        if not math.isclose(sum(x * x for x in cfg.spray_axis) ** 0.5, 1.0, abs_tol=1e-5):
+            raise ValueError("spray_axis must be a unit vector in the TCP link frame.")
+        super().__init__(cfg, env)
+        self.robot = env.scene[cfg.asset_name]
+        names = [cfg.tcp_body, "torso_link", "left_shoulder_roll_link", "left_elbow_link", "left_wrist_yaw_link"]
+        ids, resolved = self.robot.find_bodies(names, preserve_order=True)
+        if resolved != names:
+            raise ValueError(f"Painting body names do not match G1_CFG: {resolved}")
+        self.tcp_id, self.torso_id, self.left_shoulder_id, self.left_elbow_id, self.left_hand_id = ids
+        maximum = cfg.speed_range[1] * (cfg.duration_range[1] - cfg.prepare_time - cfg.catchup_time)
+        self.capacity = math.ceil(maximum / cfg.path.spacing) + 2
+        n, d = self.num_envs, self.device
+        self.points = torch.zeros(n, self.capacity, 6, device=d)
+        self.points[..., 2] = sum(cfg.path.height_range) / 2
+        self.points[..., 3] = -1
+        self.arc = (torch.arange(self.capacity, device=d) * cfg.path.spacing)[None].repeat(n, 1)
+        self.lengths = self.arc[:, -1].clone()
+        self.counts = torch.full((n,), self.capacity, dtype=torch.long, device=d)
+        self.primitive_counts = torch.zeros(n, 4, dtype=torch.long, device=d)
+        self.speed = torch.full((n,), cfg.speed_range[0], device=d)
+        self.distance = torch.full((n,), sum(cfg.distance_range) / 2, device=d)
+        self.deadline = torch.full((n,), cfg.duration_range[1], device=d)
+        self.heading = -torch.ones(n, device=d)
+        self.start_step = torch.zeros(n, dtype=torch.long, device=d)
+        self.lookahead = torch.tensor(cfg.lookahead_times, device=d)
+        self.offset = torch.tensor(cfg.tcp_offset, device=d)
+        self.local_axis = torch.tensor(cfg.spray_axis, device=d)
+        self._snapshot_step = -1
+        self._metric_step = torch.full((n,), -1, device=d, dtype=torch.long)
+        self._started = torch.zeros(n, device=d, dtype=torch.bool)
+        self._sums = torch.zeros(n, 6, device=d)
+        self._samples = torch.zeros(n, device=d)
+        self._position_history = torch.full(
+            (n, math.ceil(cfg.duration_range[1] / env.step_dt) + 2), float("nan"), device=d
+        )
+        self.refresh()
+
+    @property
+    def command(self):
+        self.refresh()
+        return self.goal_observation
+
+    def refresh(self):
+        step = self._env.common_step_counter
+        if self._snapshot_step == step:
+            return
+        self._snapshot_step = step
+        self.elapsed = (step - self.start_step).to(self.points.dtype) * self._env.step_dt
+        target, velocity, self.progress, self.command_speed = reference_at_time(
+            self.points, self.arc, self.lengths, self.speed, self.distance, self.elapsed,
+            self.cfg.prepare_time, self.lookahead,
+        )
+        origins = self._env.scene.env_origins
+        self.target_world = target + origins[:, None]
+        self.target_velocity = velocity
+        data = self.robot.data
+        self.base_pos = data.root_link_pos_w
+        self.base_quat = data.root_link_quat_w
+        link_pose = data.body_link_pose_w[:, self.tcp_id]
+        link_velocity = data.body_link_vel_w[:, self.tcp_id]
+        tcp_offset = rotate(link_pose[:, 3:7], self.offset.expand(self.num_envs, -1))
+        self.tcp_position = link_pose[:, :3] + tcp_offset
+        self.tcp_velocity = link_velocity[:, :3] + torch.cross(link_velocity[:, 3:6], tcp_offset, dim=-1)
+        self.spray_axis = rotate(link_pose[:, 3:7], self.local_axis.expand(self.num_envs, -1))
+        self.position_error = torch.linalg.vector_norm(self.tcp_position - self.target_world[:, 0], dim=-1)
+        self.axis_error = torch.acos(self.spray_axis[:, 0].clamp(-1.0, 1.0))
+        self.velocity_error = torch.linalg.vector_norm(self.tcp_velocity - velocity, dim=-1)
+        self.tilt = torch.acos((-data.projected_gravity_b[:, 2]).clamp(-1.0, 1.0))
+        endpoint = self.points[torch.arange(self.num_envs, device=self.device), self.counts - 1, :3].clone()
+        endpoint[:, 0] -= self.distance
+        self.endpoint_error = torch.linalg.vector_norm(self.tcp_position - (endpoint + origins), dim=-1)
+        self.bad, self.success, self.timeout = ending_masks(
+            self.tilt, self.progress, self.lengths, self.endpoint_error, self.elapsed, self.deadline,
+            self.cfg.bad_orientation_limit, self.cfg.success_tolerance,
+        )
+        self.goal_observation = trajectory_observation(
+            self.target_world, self.base_pos, self.base_quat, self.command_speed
+        )
+        self.velocity_targets = torch.cat(
+            (inverse_rotate(self.base_quat, data.root_link_lin_vel_w), inverse_rotate(self.base_quat, self.tcp_velocity)), -1
+        )
+        torso_quat = data.body_link_quat_w[:, self.torso_id]
+        forward = torch.tensor([1.0, 0.0, 0.0], device=self.device).expand(self.num_envs, -1)
+        torso_forward, base_forward = rotate(torso_quat, forward), rotate(self.base_quat, forward)
+        self.facing_error = torch.stack(
+            (torch.atan2(base_forward[:, 1], base_forward[:, 0]),
+             torch.atan2(torso_forward[:, 1], torso_forward[:, 0])), -1
+        )
+        arm = data.body_link_pos_w[:, [self.left_shoulder_id, self.left_elbow_id, self.left_hand_id]]
+        directions = torch.diff(arm, dim=1)
+        directions /= torch.linalg.vector_norm(directions, dim=-1, keepdim=True).clamp_min(1e-6)
+        self.left_arm_error = (1 + directions[..., 2]).mean(-1)
+        self.left_hand_base = inverse_rotate(self.base_quat, arm[:, -1] - self.base_pos)
+        self._record_metrics(step)
+
+    def _record_metrics(self, step):
+        valid = self._started & (self._metric_step != step) & (self.command_speed > 0)
+        values = torch.stack(
+            (self.position_error, self.axis_error, self.velocity_error, self.facing_error.abs().mean(-1),
+             self.left_arm_error, self.endpoint_error), -1
+        )
+        self._sums += torch.where(valid[:, None], values, 0.0)
+        self._samples += valid
+        rows = valid.nonzero().flatten()
+        cols = (step - self.start_step[rows]).clamp_max(self._position_history.shape[1] - 1)
+        self._position_history[rows, cols] = self.position_error[rows]
+        self._metric_step[:] = step
+
+    def reset(self, env_ids=None):
+        if env_ids is None or isinstance(env_ids, slice):
+            env_ids = torch.arange(self.num_envs, device=self.device)[env_ids if env_ids is not None else slice(None)]
+        env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        self.refresh()
+        old = env_ids[self._started[env_ids]]
+        logs = {}
+        if len(old):
+            means = self._sums[old] / self._samples[old, None].clamp_min(1)
+            for i, name in enumerate(("position_error", "axis_error", "velocity_error", "facing_error", "left_arm_error")):
+                logs[name] = means[:, i].mean().item()
+            for name, values in (("success", self.success), ("time_limit", self.timeout), ("bad_orientation", self.bad),
+                                 ("duration", self.elapsed), ("path_length", self.lengths),
+                                 ("endpoint_error", self.endpoint_error), ("completion", self.progress / self.lengths)):
+                logs[name] = values[old].float().mean().item()
+            p95 = torch.nanquantile(self._position_history[old], 0.95, dim=-1)
+            if torch.isfinite(p95).any():
+                logs["position_p95"] = p95[torch.isfinite(p95)].mean().item()
+            for name, direction in (("right", -1), ("left", 1)):
+                selected = old[self.heading[old] == direction]
+                if len(selected):
+                    logs[f"success_{name}"] = self.success[selected].float().mean().item()
+        self._sums[env_ids] = 0
+        self._samples[env_ids] = 0
+        self._position_history[env_ids] = float("nan")
+        self._metric_step[env_ids] = self._env.common_step_counter
+        self.command_counter[env_ids] = 0
+        self._resample(env_ids)
+        return logs
+
+    def _resample_command(self, env_ids):
+        n = len(env_ids)
+        self.deadline[env_ids] = (
+            torch.empty(n, device=self.device).uniform_(*self.cfg.duration_range) / self._env.step_dt
+        ).round() * self._env.step_dt
+        self.speed[env_ids] = torch.empty(n, device=self.device).uniform_(*self.cfg.speed_range)
+        self.distance[env_ids] = torch.empty(n, device=self.device).uniform_(*self.cfg.distance_range)
+        self.heading[env_ids] = torch.where(torch.rand(n, device=self.device) < self.cfg.right_probability, -1.0, 1.0)
+        length = self.speed[env_ids] * (self.deadline[env_ids] - self.cfg.prepare_time - self.cfg.catchup_time)
+        paths = sample_paths(length, self.heading[env_ids], self.cfg.path, capacity=self.capacity)
+        for name in ("points", "arc", "counts", "lengths", "primitive_counts"):
+            getattr(self, name)[env_ids] = getattr(paths, name)
+        self.start_step[env_ids] = self._env.common_step_counter
+        self._started[env_ids] = True
+        reset_painting_root(
+            self.robot, env_ids, self._env.scene.env_origins, self.distance[env_ids],
+            self.cfg.base_forward_reach, self.cfg.base_lateral_offset, self.cfg.initial_yaw_range,
+        )
+        self._snapshot_step = -1
+
+    def set_external_path(self, env_id: int, surface_points: torch.Tensor, speed: float, distance: float):
+        """Install a wall-frame path immediately after reset, preserving the time-budget rule."""
+        if not 0 <= env_id < self.num_envs:
+            raise ValueError("Invalid environment index.")
+        if not self.cfg.speed_range[0] <= speed <= self.cfg.speed_range[1]:
+            raise ValueError("External speed is outside the trained range.")
+        if not self.cfg.distance_range[0] <= distance <= self.cfg.distance_range[1]:
+            raise ValueError("External TCP distance is outside the trained range.")
+        if self._env.common_step_counter != int(self.start_step[env_id]):
+            raise ValueError("Install an external trajectory immediately after resetting that environment.")
+        path = import_surface_path(surface_points.to(device=self.device, dtype=torch.float32), self.cfg.path, self.capacity)
+        duration = float(path.lengths[0]) / speed + self.cfg.prepare_time + self.cfg.catchup_time
+        if not self.cfg.duration_range[0] <= duration <= self.cfg.duration_range[1]:
+            raise ValueError("External trajectory length and speed require a duration outside the trained range.")
+        for name in ("points", "arc", "counts", "lengths", "primitive_counts"):
+            getattr(self, name)[env_id] = getattr(path, name)[0]
+        self.deadline[env_id], self.speed[env_id], self.distance[env_id] = duration, speed, distance
+        self.heading[env_id] = 1 if surface_points[-1, 1] >= surface_points[0, 1] else -1
+        self._snapshot_step = -1
+
+    def compute(self, dt):
+        # Episode-only resampling: CommandManager's periodic timer is deliberately unused.
+        self.refresh()
+
+    def _update_metrics(self):
+        self.refresh()
+
+    def _update_command(self):
+        self.refresh()
+
+    def _set_debug_vis_impl(self, debug_vis):
+        if debug_vis and not hasattr(self, "visualizer"):
+            self.visualizer = VisualizationMarkers(VisualizationMarkersCfg(
+                prim_path="/Visuals/Painting",
+                markers={
+                    "surface": sim_utils.SphereCfg(radius=0.006, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.6, 0.6, 0.6))),
+                    "target": sim_utils.SphereCfg(radius=0.018, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.9, 0.2))),
+                    "actual": sim_utils.SphereCfg(radius=0.012, visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.2, 0.1))),
+                },
+            ))
+        if hasattr(self, "visualizer"):
+            self.visualizer.set_visibility(debug_vis)
+
+    def _debug_vis_callback(self, event):
+        if not hasattr(self, "points"):
+            return
+        self.refresh()
+        n = min(self.num_envs, self.cfg.debug_env_count)
+        surface = (self.points[:n, ::4, :3] + self._env.scene.env_origins[:n, None]).reshape(-1, 3)
+        targets = self.target_world[:n].reshape(-1, 3)
+        # Red dots also show the actual spray axis from TCP towards the wall.
+        offsets = torch.linspace(0, 0.1, 8, device=self.device)
+        actual = (self.tcp_position[:n, None] + self.spray_axis[:n, None] * offsets[None, :, None]).reshape(-1, 3)
+        indices = torch.cat((torch.zeros(len(surface), device=self.device), torch.ones(len(targets), device=self.device),
+                             torch.full((len(actual),), 2, device=self.device))).long()
+        self.visualizer.visualize(torch.cat((surface, targets, actual)), marker_indices=indices)
+
+
+@configclass
+class PaintingCommandCfg(CommandTermCfg):
+    class_type: type = PaintingCommand
+    asset_name: str = "robot"
+    resampling_time_range: tuple[float, float] = (1.0e9, 1.0e9)
+    duration_range: tuple[float, float] = (20.0, 30.0)
+    speed_range: tuple[float, float] = (0.2, 0.4)
+    distance_range: tuple[float, float] = (0.05, 0.15)
+    right_probability: float = 0.8
+    prepare_time: float = 1.0
+    catchup_time: float = 1.5
+    lookahead_times: tuple[float, ...] = (0.0, 0.1, 0.2, 0.4, 0.8)
+    tcp_body: str = "right_wrist_yaw_link"
+    tcp_offset: tuple[float, float, float] = (0.10, 0.0, 0.0)
+    spray_axis: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    base_forward_reach: float = 0.28
+    base_lateral_offset: float = 0.18
+    initial_yaw_range: tuple[float, float] = (-0.03, 0.03)
+    bad_orientation_limit: float = 0.8
+    success_tolerance: float = 0.03
+    path: PaintingPathCfg = PaintingPathCfg()
+    debug_env_count: int = 4
