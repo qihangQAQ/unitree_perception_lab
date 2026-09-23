@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any
 
 
+TERRAIN_USD_FILENAME = "navigation_terrain_wall_usd_merge_large_single_object_maze.usd"
+# This module lives at <project>/source/unitree_rl_lab/unitree_rl_lab/fdm/config.py.
+DEFAULT_TERRAIN_USD = Path(__file__).resolve().parents[4] / "fdm" / "assets" / "terrains" / TERRAIN_USD_FILENAME
+
+
 @dataclass
 class CommandSamplingCfg:
     """Distribution of command sequences used during data collection."""
@@ -51,10 +56,7 @@ class RolloutCfg:
     policy_checkpoint: str = (
         "logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt"
     )
-    terrain_usd_path: str = (
-        "/home/qihang/code/fdm/exts/fdm/data/Terrains/"
-        "navigation_terrain_wall_usd_merge_large_single_object_maze.usd"
-    )
+    terrain_usd_path: str = str(DEFAULT_TERRAIN_USD)
     dataset_root: str = "datasets/fdm_g1/default"
     num_envs: int = 256
     seed: int = 42

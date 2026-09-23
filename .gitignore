@@ -8,11 +8,12 @@
 **/*.dmp
 **/.thumbs
 
-# No USD files allowed in the repo
+# Ignore USD files except the bundled FDM training terrain.
 **/*.usd
 **/*.usda
 **/*.usdc
 **/*.usdz
+!fdm/assets/terrains/navigation_terrain_wall_usd_merge_large_single_object_maze.usd
 
 # Python
 .DS_Store

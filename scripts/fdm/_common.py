@@ -16,6 +16,21 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def require_input_file(value: str, option: str) -> str:
+    """Resolve an input before launching Isaac Sim and reject Git LFS pointers."""
+
+    path = Path(value).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"{option} must point to an existing file: {path}")
+    try:
+        with path.open("rb") as stream:
+            if stream.read(80).startswith(b"version https://git-lfs.github.com/spec/v1"):
+                raise ValueError(f"{option} is a Git LFS pointer, not the asset: {path}. Run git lfs pull.")
+    except OSError as exc:
+        raise ValueError(f"{option} cannot be read: {path}: {exc}") from exc
+    return str(path)
+
+
 def git_commit() -> str:
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False

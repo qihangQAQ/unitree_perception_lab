@@ -2,6 +2,8 @@
 
 这一目录对应“不带 MPPI”的第一阶段：冻结已有的 G1 高程图 locomotion policy，在线 rollout，按 episode 分片保存数据，并交替训练单个 height-map FDM。
 
+训练地形随本项目保存在 `fdm/assets/terrains/navigation_terrain_wall_usd_merge_large_single_object_maze.usd`，与参考 FDM 的原始 USD 内容一致。USD 通过 Git LFS 管理；克隆或更新仓库后如果只得到指针文件，先在仓库根目录执行 `git lfs pull`。两个入口默认使用此地形，只有切换地形时才需要传 `--terrain-usd`。
+
 核心约束已经固化在代码和测试中：
 
 - 策略仍使用 283 维 observation、29 维关节 action 和 recurrent hidden state。
@@ -21,7 +23,6 @@ conda activate unitree-lab
 python scripts/fdm/collect_rollouts.py \
   --headless --device cuda:0 \
   --checkpoint logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt \
-  --terrain-usd /home/qihang/code/fdm/exts/fdm/data/Terrains/navigation_terrain_wall_usd_merge_large_single_object_maze.usd \
   --dataset datasets/fdm_g1/baseline \
   --split train --num-envs 256 --num-episodes 256
 ```
@@ -32,7 +33,6 @@ python scripts/fdm/collect_rollouts.py \
 python scripts/fdm/train_fdm.py \
   --headless --device cuda:0 \
   --checkpoint logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt \
-  --terrain-usd /home/qihang/code/fdm/exts/fdm/data/Terrains/navigation_terrain_wall_usd_merge_large_single_object_maze.usd \
   --dataset datasets/fdm_g1/baseline \
   --output logs/fdm_g1/baseline
 ```

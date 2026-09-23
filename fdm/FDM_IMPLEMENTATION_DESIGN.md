@@ -369,18 +369,17 @@ collision_target[h] = 1
 
 ## 7. 地形方案
 
-### 7.1 直接使用原 FDM 合并 USD
+### 7.1 使用原 FDM 合并 USD 的项目内副本
 
-第一版直接使用原 FDM 当前启用的合并 USD，不使用本项目的程序化 terrain generator 生成训练地形：
+第一版使用原 FDM 当前启用的合并 USD，不使用本项目的程序化 terrain generator 生成训练地形。原始文件已复制到本仓库：
 
 ```text
-/home/qihang/code/fdm/exts/fdm/data/Terrains/
-navigation_terrain_wall_usd_merge_large_single_object_maze.usd
+fdm/assets/terrains/navigation_terrain_wall_usd_merge_large_single_object_maze.usd
 ```
 
 该文件约 26 MB，包含 wall、single-object 和 maze 等原 FDM 训练场景。第一版保持 USD 几何、比例和障碍尺寸不变，只针对 G1 调整出生高度、姿态和 reset 安全检查。
 
-USD 路径必须作为配置项 `terrain_usd_path` 或命令行参数传入。开发环境可以默认指向上述原仓库文件，但运行代码不能在多个模块中散落硬编码绝对路径。若后续需要仓库自包含，可以复制同一个 USD 文件或用外部资产目录部署；无论资产放置位置如何，使用的都必须是同一个原始 USD。
+运行代码在一处定义项目内默认路径，训练和采集入口都可省略 `--terrain-usd`；该参数保留为切换地形时的覆盖项。USD 由 Git LFS 管理，部署时需取得实际资产文件。数据清单仍记录地形 SHA-256，以防混用不同地形。
 
 ### 7.2 移植原 FDM 的 USD importer
 
@@ -677,11 +676,11 @@ unitree_perception_lab/
 ├── fdm/
 │   ├── FDM_IMPLEMENTATION_DESIGN.md       # 本文档
 │   ├── README.md                          # 后续补充使用说明
-│   └── configs/
-│       ├── rollout_g1_height.yaml
-│       ├── model_g1_height.yaml
-│       └── train_g1_height.yaml
-│   # terrain_usd_path 指向原 FDM 的合并 USD；大文件不复制进源码包
+│   ├── configs/
+│       ├── rollout.yaml
+│       ├── model.yaml
+│       └── train.yaml
+│   └── assets/terrains/                    # 原 FDM 合并 USD 的项目内副本（Git LFS）
 │
 ├── source/unitree_rl_lab/unitree_rl_lab/
 │   ├── tasks/fdm/
@@ -838,7 +837,7 @@ unitree_perception_lab/
 | 主碰撞 link | `torso_link` + 左右 wrist roll/pitch/yaw links + 左右 `rubber_hand` |
 | 碰撞诊断 | `[torso, left_hand, right_hand]`，主标签为三者 OR |
 | termination 延迟 | 1 policy step = 0.02 s |
-| 地形 | 直接使用原 FDM `navigation_terrain_wall_usd_merge_large_single_object_maze.usd` |
+| 地形 | 使用项目内的原 FDM `navigation_terrain_wall_usd_merge_large_single_object_maze.usd` 副本 |
 | USD origin | 移植 `NavTerrainImporter`，`usd_uniform_env_spacing = 10.0 m` |
 | 训练方式 | 20 个 collection rounds；每轮在线采集新数据后训练 FDM 8 epochs |
 | 模型输出 | 未来 SE(2) 轨迹 + 累计碰撞概率 |

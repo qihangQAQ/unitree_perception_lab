@@ -11,6 +11,7 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
 from isaaclab.utils import configclass
 
+from unitree_rl_lab.fdm.config import DEFAULT_TERRAIN_USD
 from unitree_rl_lab.tasks.locomotion import mdp as locomotion_mdp
 
 from . import mdp
@@ -24,11 +25,6 @@ _predict_module = importlib.import_module(
 )
 PerceptionRobotSceneCfg = _perception_module.RobotSceneCfg
 PredictRobotEnvCfg = _predict_module.RobotEnvCfg
-
-DEFAULT_TERRAIN_USD = (
-    "/home/qihang/code/fdm/exts/fdm/data/Terrains/"
-    "navigation_terrain_wall_usd_merge_large_single_object_maze.usd"
-)
 
 NAVIGATION_BODY_NAMES = [
     "torso_link",
@@ -48,7 +44,7 @@ class FDMRobotSceneCfg(PerceptionRobotSceneCfg):
     terrain = SplitAwareUsdTerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="usd",
-        usd_path=DEFAULT_TERRAIN_USD,
+        usd_path=str(DEFAULT_TERRAIN_USD),
         usd_uniform_env_spacing=10.0,
         active_split="train",
         collision_group=-1,

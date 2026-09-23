@@ -1,6 +1,6 @@
 task_name: Unitree-G1-29dof-FDM-Rollout
 policy_checkpoint: logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt
-terrain_usd_path: /home/qihang/code/fdm/exts/fdm/data/Terrains/navigation_terrain_wall_usd_merge_large_single_object_maze.usd
+# terrain_usd_path defaults to the bundled fdm/assets/terrains USD.
 dataset_root: datasets/fdm_g1/baseline
 num_envs: 256
 seed: 42

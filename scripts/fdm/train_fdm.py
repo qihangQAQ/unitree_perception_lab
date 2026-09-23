@@ -6,11 +6,14 @@ import argparse
 from pathlib import Path
 
 from isaaclab.app import AppLauncher
+from unitree_rl_lab.fdm.config import DEFAULT_TERRAIN_USD
+
+from _common import configure_safe_spawn, dataset_metadata, require_input_file
 
 parser = argparse.ArgumentParser(description="Online collect/train loop for the G1 height-map FDM.")
 parser.add_argument("--task", default="Unitree-G1-29dof-FDM-Rollout")
 parser.add_argument("--checkpoint", required=True, help="Frozen G1 locomotion policy checkpoint.")
-parser.add_argument("--terrain-usd", required=True)
+parser.add_argument("--terrain-usd", default=str(DEFAULT_TERRAIN_USD), help="USD terrain (default: bundled FDM terrain).")
 parser.add_argument("--dataset", required=True)
 parser.add_argument("--output", default="logs/fdm_g1")
 parser.add_argument("--num-envs", type=int, default=256)
@@ -24,6 +27,12 @@ parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--disable-policy-corruption", action="store_true")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+
+try:
+    args.checkpoint = require_input_file(args.checkpoint, "--checkpoint")
+    args.terrain_usd = require_input_file(args.terrain_usd, "--terrain-usd")
+except ValueError as exc:
+    parser.error(str(exc))
 
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
@@ -43,8 +52,6 @@ from unitree_rl_lab.fdm.models import G1HeightFDM
 from unitree_rl_lab.fdm.runner import FDMRolloutCollector, FrozenRecurrentPolicy
 from unitree_rl_lab.fdm.training import FDMTrainer
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
-
-from _common import configure_safe_spawn, dataset_metadata
 
 
 def _split_shards(dataset_root: str, split: str) -> list[Path]:
