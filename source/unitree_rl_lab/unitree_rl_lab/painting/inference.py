@@ -31,18 +31,31 @@ class PaintingPolicy:
     """
 
     def __init__(self, onnx_path, deploy_config):
-        import onnxruntime as ort
-
         metadata = deploy_config["painting_inference"]
-        self.session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+        if metadata.get("interface_version") != 2:
+            raise ValueError("PaintingPolicy requires the explicit V2/27-command deployment interface.")
+        try:
+            import onnxruntime as ort
+
+            self.session = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+        except ImportError:
+            # The ONNX reference evaluator keeps offline validation available
+            # in simulator environments that do not bundle ONNX Runtime.
+            from onnx.reference import ReferenceEvaluator
+
+            self.session = ReferenceEvaluator(str(onnx_path))
         self.nominal = np.asarray(deploy_config["default_joint_pos"], dtype=np.float32)
         self.scale = np.asarray(deploy_config["actions"]["JointPositionAction"]["scale"], dtype=np.float32)
         self.offset = np.asarray(deploy_config["actions"]["JointPositionAction"]["offset"], dtype=np.float32)
         self.angular_scale = metadata["angular_velocity_scale"]
         self.velocity_scale = metadata["joint_velocity_scale"]
         self.action_clip = metadata["action_clip"]
+        self.raw_action_limits = np.asarray(metadata["raw_action_limits"], dtype=np.float32)
+        self.target_position_limits = np.asarray(metadata["target_position_limits"], dtype=np.float32)
         if any(x.shape != (29,) for x in (self.nominal, self.scale, self.offset)):
             raise ValueError("Painting joint metadata must have 29 values.")
+        if self.raw_action_limits.shape != (29, 2) or self.target_position_limits.shape != (29, 2):
+            raise ValueError("Painting V2 requires 29 per-joint raw-action and target-position limits.")
         self.reset()
 
     def reset(self):
@@ -51,7 +64,9 @@ class PaintingPolicy:
         self.initialized = False
 
     def step(self, angular_velocity, projected_gravity, joint_position, joint_velocity,
-             target_positions_base, spray_direction_base, desired_speed):
+             target_positions_base, spray_direction_base, desired_speed,
+             base_velocity_command, base_anchor_position, end_effector_active,
+             startup_countdown, remaining_time):
         frame = np.concatenate((
             np.asarray(angular_velocity) * self.angular_scale,
             np.asarray(projected_gravity),
@@ -61,9 +76,20 @@ class PaintingPolicy:
         )).astype(np.float32)
         targets = np.asarray(target_positions_base, dtype=np.float32)
         direction = np.asarray(spray_direction_base, dtype=np.float32)
-        if frame.shape != (93,) or targets.shape != (5, 3) or direction.shape != (3,):
+        base_command = np.asarray(base_velocity_command, dtype=np.float32)
+        anchor = np.asarray(base_anchor_position, dtype=np.float32)
+        if (
+            frame.shape != (93,)
+            or targets.shape != (5, 3)
+            or direction.shape != (3,)
+            or base_command.shape != (3,)
+            or anchor.shape != (2,)
+        ):
             raise ValueError("Invalid painting observation shape.")
-        command = np.concatenate((targets.ravel(), direction, [desired_speed])).astype(np.float32)
+        command = np.concatenate((
+            targets.ravel(), direction, [desired_speed], base_command, anchor,
+            [end_effector_active, startup_countdown, remaining_time],
+        )).astype(np.float32)
         if not np.isfinite(frame).all() or not np.isfinite(command).all():
             raise ValueError("Painting observations must be finite.")
         if self.initialized:
@@ -74,7 +100,8 @@ class PaintingPolicy:
             self.initialized = True
         actions = self.session.run(["actions"], {
             "proprio_history": self.history.reshape(1, 465),
-            "trajectory_command": command.reshape(1, 19),
+            "trajectory_command": command.reshape(1, 27),
         })[0][0]
-        self.last_action = np.clip(actions, -self.action_clip, self.action_clip)
-        return self.offset + self.scale * self.last_action
+        self.last_action = np.clip(actions, self.raw_action_limits[:, 0], self.raw_action_limits[:, 1])
+        targets = self.offset + self.scale * self.last_action
+        return np.clip(targets, self.target_position_limits[:, 0], self.target_position_limits[:, 1])

@@ -1,4 +1,4 @@
-"""Nineteen task inputs and training-only velocity labels."""
+"""Twenty-seven task inputs and training-only velocity labels."""
 
 import torch
 

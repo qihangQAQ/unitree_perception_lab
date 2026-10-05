@@ -1,0 +1,157 @@
+{
+  "checkpoint": "logs/rsl_rl/G1-Painting/2026-10-04_19-19-52_first-try/model_17500.pt",
+  "action_clip": 3,
+  "formula": "For X~N(mu,sigma^2): P(abs(X)>3)>=erfc(3/(sqrt(2)*sigma)); equality at mu=0. This is an analytical lower bound, not rollout measurement.",
+  "mean_std": 1047.8445449265942,
+  "min_std": 0.33822670578956604,
+  "max_std": 6179.77001953125,
+  "num_joints_std_above_clip": 14,
+  "mean_minimum_clip_probability": 0.4783043221354479,
+  "rows": [
+    {
+      "joint": "left_hip_pitch_joint",
+      "std": 42.17560577392578,
+      "minimum_clip_probability": 0.9432933643955902
+    },
+    {
+      "joint": "right_hip_pitch_joint",
+      "std": 229.43370056152344,
+      "minimum_clip_probability": 0.9895674198260602
+    },
+    {
+      "joint": "waist_yaw_joint",
+      "std": 0.5087858438491821,
+      "minimum_clip_probability": 3.715391868999839e-09
+    },
+    {
+      "joint": "left_hip_roll_joint",
+      "std": 944.0338745117188,
+      "minimum_clip_probability": 0.9974644451664015
+    },
+    {
+      "joint": "right_hip_roll_joint",
+      "std": 0.6105504631996155,
+      "minimum_clip_probability": 8.941965621370327e-07
+    },
+    {
+      "joint": "waist_roll_joint",
+      "std": 0.657193124294281,
+      "minimum_clip_probability": 4.998082303878221e-06
+    },
+    {
+      "joint": "left_hip_yaw_joint",
+      "std": 329.1173400878906,
+      "minimum_clip_probability": 0.9927271515543298
+    },
+    {
+      "joint": "right_hip_yaw_joint",
+      "std": 1631.49658203125,
+      "minimum_clip_probability": 0.99853284869863
+    },
+    {
+      "joint": "waist_pitch_joint",
+      "std": 0.7403846979141235,
+      "minimum_clip_probability": 5.079304240892882e-05
+    },
+    {
+      "joint": "left_knee_joint",
+      "std": 0.41545000672340393,
+      "minimum_clip_probability": 5.15742298173467e-13
+    },
+    {
+      "joint": "right_knee_joint",
+      "std": 0.3998829424381256,
+      "minimum_clip_probability": 6.275769004234333e-14
+    },
+    {
+      "joint": "left_shoulder_pitch_joint",
+      "std": 0.7672451734542847,
+      "minimum_clip_probability": 9.226058378248118e-05
+    },
+    {
+      "joint": "right_shoulder_pitch_joint",
+      "std": 0.7121153473854065,
+      "minimum_clip_probability": 2.522236540270997e-05
+    },
+    {
+      "joint": "left_ankle_pitch_joint",
+      "std": 350.0583801269531,
+      "minimum_clip_probability": 0.9931622137381952
+    },
+    {
+      "joint": "right_ankle_pitch_joint",
+      "std": 5497.49658203125,
+      "minimum_clip_probability": 0.9995645920778867
+    },
+    {
+      "joint": "left_shoulder_roll_joint",
+      "std": 0.7724237442016602,
+      "minimum_clip_probability": 0.00010280327935442907
+    },
+    {
+      "joint": "right_shoulder_roll_joint",
+      "std": 61.36829376220703,
+      "minimum_clip_probability": 0.9610108005160345
+    },
+    {
+      "joint": "left_ankle_roll_joint",
+      "std": 3795.80029296875,
+      "minimum_clip_probability": 0.9993693942651188
+    },
+    {
+      "joint": "right_ankle_roll_joint",
+      "std": 1596.9443359375,
+      "minimum_clip_probability": 0.9985011047532222
+    },
+    {
+      "joint": "left_shoulder_yaw_joint",
+      "std": 2090.60400390625,
+      "minimum_clip_probability": 0.9988550424392024
+    },
+    {
+      "joint": "right_shoulder_yaw_joint",
+      "std": 0.5005049705505371,
+      "minimum_clip_probability": 2.048088177568389e-09
+    },
+    {
+      "joint": "left_elbow_joint",
+      "std": 0.558521032333374,
+      "minimum_clip_probability": 7.815863170260882e-08
+    },
+    {
+      "joint": "right_elbow_joint",
+      "std": 0.33822670578956604,
+      "minimum_clip_probability": 7.3283684001961885e-19
+    },
+    {
+      "joint": "left_wrist_roll_joint",
+      "std": 4162.41943359375,
+      "minimum_clip_probability": 0.999424936983559
+    },
+    {
+      "joint": "right_wrist_roll_joint",
+      "std": 0.38488641381263733,
+      "minimum_clip_probability": 6.466022553546535e-15
+    },
+    {
+      "joint": "left_wrist_pitch_joint",
+      "std": 6179.77001953125,
+      "minimum_clip_probability": 0.999612662998651
+    },
+    {
+      "joint": "right_wrist_pitch_joint",
+      "std": 3468.26953125,
+      "minimum_clip_probability": 0.9993098421670077
+    },
+    {
+      "joint": "left_wrist_yaw_joint",
+      "std": 0.7921802997589111,
+      "minimum_clip_probability": 0.00015246687558629504
+    },
+    {
+      "joint": "right_wrist_yaw_joint",
+      "std": 0.34547603130340576,
+      "minimum_clip_probability": 3.831980249047183e-18
+    }
+  ]
+}

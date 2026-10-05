@@ -10,17 +10,20 @@ class PaintingActorCriticCfg(RslRlPpoActorCriticCfg):
     actor_hidden_dims: list[int] = [256, 128, 64]
     critic_hidden_dims: list[int] = [256, 256, 128]
     activation: str = "elu"
-    init_noise_std: float = 0.5
+    init_noise_std: float = 0.25
     noise_std_type: str = "log"
     actor_obs_normalization: bool = False
     critic_obs_normalization: bool = False
     history_length: int = 5
     proprio_dim: int = 93
-    command_dim: int = 19
+    command_dim: int = 27
     proprio_group: str = "policy"
     command_group: str = "painting"
     velocity_group: str = "velocity_targets"
     estimator_hidden_dims: list[int] = [128, 64]
+    min_action_std: float = 0.05
+    max_action_std: float = 0.4
+    mean_action_limit: float = 2.0
 
 
 @configclass
@@ -29,7 +32,9 @@ class PaintingAlgorithmCfg(RslRlPpoAlgorithmCfg):
     value_loss_coef: float = 1.0
     use_clipped_value_loss: bool = True
     clip_param: float = 0.2
-    entropy_coef: float = 0.01
+    # Stage-A diagnostics start without an entropy bonus.  The bounded nonzero
+    # Gaussian std still supplies exploration.
+    entropy_coef: float = 0.0
     num_learning_epochs: int = 5
     num_mini_batches: int = 4
     learning_rate: float = 1e-3

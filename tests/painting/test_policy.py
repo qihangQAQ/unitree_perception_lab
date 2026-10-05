@@ -9,8 +9,8 @@ from unitree_rl_lab.rsl_rl_ext.runners.painting_runner import PaintingRunner
 
 
 def _observations(n=8):
-    return TensorDict({"policy": torch.randn(n, 5, 93), "painting": torch.randn(n, 19),
-                       "critic": torch.randn(n, 120), "velocity_targets": torch.randn(n, 6)}, [n])
+    return TensorDict({"policy": torch.randn(n, 5, 93), "painting": torch.randn(n, 27),
+                       "critic": torch.randn(n, 128), "velocity_targets": torch.randn(n, 6)}, [n])
 
 
 def _policy(obs):
@@ -30,7 +30,25 @@ def test_actor_has_no_truth_leak_and_policy_gradients_do_not_train_estimator():
     before.square().mean().backward()
     assert all(p.grad is None for p in policy.estimator.parameters())
     assert all(p.grad is not None for p in policy.actor.parameters())
-    assert policy.get_actor_obs(obs).shape == (8, 118)
+    assert policy.get_actor_obs(obs).shape == (8, 126)
+    assert (before < policy.action_mean_upper).all()
+    assert (before > policy.action_mean_lower).all()
+
+
+def test_action_mean_and_effective_std_are_bounded_and_projected():
+    obs = _observations()
+    policy = _policy(obs)
+    with torch.no_grad():
+        for parameter in policy.actor.parameters():
+            parameter.mul_(1.0e4)
+        policy.log_std.copy_(torch.linspace(-100, 100, 29))
+    actions = policy.act_inference(obs)
+    assert (actions <= policy.action_mean_upper).all()
+    assert (actions >= policy.action_mean_lower).all()
+    assert (policy.effective_action_std >= policy.action_std_min).all()
+    assert (policy.effective_action_std <= policy.action_std_max).all()
+    policy.project_distribution_parameters_()
+    torch.testing.assert_close(policy.log_std.exp(), policy.effective_action_std)
 
 
 def test_real_ppo_update_trains_both_networks_and_estimator_checkpoint(tmp_path):
@@ -49,6 +67,8 @@ def test_real_ppo_update_trains_both_networks_and_estimator_checkpoint(tmp_path)
         algorithm.compute_returns(obs)
     losses = algorithm.update()
     assert all(np.isfinite(v) for v in losses.values())
+    assert "action/clip_rate" in losses and "action/std_all" in losses
+    assert not any("saturation" in name or "joint_" in name for name in losses)
     assert any(not torch.equal(a, b) for a, b in zip(before_actor, policy.actor.parameters()))
     assert any(not torch.equal(a, b) for a, b in zip(before_estimator, policy.estimator.parameters()))
     assert all(p.grad is None for p in policy.estimator.parameters())
@@ -72,12 +92,22 @@ def test_onnx_and_numpy_adapter_match_history_action_scales_and_reset(tmp_path):
     onnx = policy.export_onnx(tmp_path)
     cfg = {"default_joint_pos": [0.1] * 29,
            "actions": {"JointPositionAction": {"scale": [0.25] * 29, "offset": [0.1] * 29}},
-           "painting_inference": {"angular_velocity_scale": .2, "joint_velocity_scale": .05, "action_clip": 3.0}}
+           "painting_inference": {
+               "interface_version": 2,
+               "angular_velocity_scale": .2,
+               "joint_velocity_scale": .05,
+               "action_clip": 3.0,
+               "raw_action_limits": [[-3.0, 3.0]] * 29,
+               "target_position_limits": [[-1.0, 1.0]] * 29,
+           }}
     adapter = PaintingPolicy(onnx, cfg)
     for _ in range(3):
         targets = np.random.default_rng(1).normal(size=(5, 3)).astype(np.float32)
-        result = adapter.step(np.ones(3), [0, 0, -1], np.ones(29), np.ones(29), targets, [1, 0, 0], .3)
-        command = np.concatenate((targets.ravel(), [1, 0, 0, .3])).astype(np.float32)
+        result = adapter.step(
+            np.ones(3), [0, 0, -1], np.ones(29), np.ones(29), targets, [1, 0, 0], .3,
+            [0, -.2, 0], [.1, -.2], 0, .5, .8,
+        )
+        command = np.concatenate((targets.ravel(), [1, 0, 0, .3, 0, -.2, 0, .1, -.2, 0, .5, .8])).astype(np.float32)
         tensors = {"policy": torch.from_numpy(adapter.history[None]), "painting": torch.from_numpy(command[None])}
         expected = policy.act_inference(tensors).detach().numpy()[0].clip(-3, 3)
         np.testing.assert_allclose(result, .1 + .25 * expected, atol=1e-6)

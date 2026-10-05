@@ -7,7 +7,7 @@ from rsl_rl.algorithms import PPO
 
 class PaintingPPO(PPO):
     def __init__(self, policy, estimator_learning_rate=1e-3, estimator_max_grad_norm=1.0,
-                 velocity_loss_coef=1.0, **kwargs):
+                 velocity_loss_coef=1.0, action_clip=3.0, action_groups=None, **kwargs):
         super().__init__(policy, **kwargs)
         if self.rnd is not None or self.symmetry is not None:
             raise ValueError("PaintingPPO requires rnd_cfg=None and symmetry_cfg=None.")
@@ -17,7 +17,23 @@ class PaintingPPO(PPO):
         self.optimizer = torch.optim.Adam(
             [p for p in policy.parameters() if id(p) not in estimator_ids], lr=self.learning_rate
         )
+        self._std_projection_hook = self.optimizer.register_step_post_hook(
+            lambda optimizer, args, hook_kwargs: self.policy.project_distribution_parameters_()
+        )
         self.estimator_optimizer = torch.optim.Adam(policy.estimator.parameters(), lr=estimator_learning_rate)
+        if action_clip <= 0:
+            raise ValueError("action_clip must be positive.")
+        self.action_clip = float(action_clip)
+        self.action_groups = dict(action_groups or {"all": list(range(policy.num_actions))})
+        self._diagnostic_samples = 0
+        self._raw_clip_counts = torch.zeros(policy.num_actions, device=self.device)
+
+    def act(self, obs):
+        actions = super().act(obs)
+        with torch.no_grad():
+            self._raw_clip_counts += (actions.abs() > self.action_clip).sum(0)
+            self._diagnostic_samples += actions.shape[0]
+        return actions
 
     def update(self):
         # Keep the encoder fixed during PPO's epochs so actor inputs do not change
@@ -46,4 +62,14 @@ class PaintingPPO(PPO):
         self.estimator_optimizer.zero_grad(set_to_none=True)
         losses["base_velocity_estimation"] = (sums[0] / max(updates, 1)).item()
         losses["tcp_velocity_estimation"] = (sums[1] / max(updates, 1)).item()
+        denominator = max(self._diagnostic_samples, 1)
+        clip_rate = self._raw_clip_counts / denominator
+        std = self.policy.effective_action_std.detach()
+        losses["action/clip_rate"] = clip_rate.mean().item()
+        for name, indices in self.action_groups.items():
+            index = torch.as_tensor(indices, device=self.device, dtype=torch.long)
+            if index.numel():
+                losses[f"action/std_{name}"] = std[index].mean().item()
+        self._raw_clip_counts.zero_()
+        self._diagnostic_samples = 0
         return losses

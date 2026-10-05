@@ -146,9 +146,16 @@ def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir, observation_group_names: 
             "prepare_time": painting.prepare_time,
             "catchup_time": painting.catchup_time,
             "right_probability": painting.right_probability,
+            "task_mode": painting.task_mode,
+            "base_speed_range": list(painting.base_speed_range),
+            "standing_probability": painting.standing_probability,
+            "side_step_ramp_time": painting.side_step_ramp_time,
         }
+        if not hasattr(action, "safe_raw_action_limits"):
+            raise ValueError("Painting V2 deployment requires SafeJointPositionAction.")
         cfg["painting_inference"] = {
-            "inputs": {"proprio_history": [1, 465], "trajectory_command": [1, 19]},
+            "interface_version": 2,
+            "inputs": {"proprio_history": [1, 465], "trajectory_command": [1, 27]},
             "outputs": {"actions": [1, 29]},
             "history_order": "oldest_to_newest",
             "joint_names": list(asset.joint_names),
@@ -156,6 +163,18 @@ def export_deploy_cfg(env: ManagerBasedRLEnv, log_dir, observation_group_names: 
             "angular_velocity_scale": 0.2,
             "joint_velocity_scale": 0.05,
             "action_clip": 3.0,
+            "raw_action_limits": action.safe_raw_action_limits[0].detach().cpu().tolist(),
+            "target_position_limits": action.safe_joint_pos_limits[0].detach().cpu().tolist(),
+            "task_command_order": [
+                "five_tcp_targets_base",
+                "spray_direction_base",
+                "desired_tcp_speed",
+                "base_velocity_command",
+                "base_anchor_position",
+                "end_effector_active",
+                "startup_countdown",
+                "remaining_time",
+            ],
             "velocity_frame": "ground_relative_expressed_in_current_base",
             "goal_frame": "current_base",
             "quaternion_order": "wxyz",

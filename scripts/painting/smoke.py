@@ -16,6 +16,7 @@ launcher = AppLauncher(args)
 app = launcher.app
 
 import gymnasium as gym
+import faulthandler
 import torch
 
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
@@ -27,16 +28,20 @@ from unitree_rl_lab.rsl_rl_ext.runners.painting_runner import PaintingRunner
 from unitree_rl_lab.utils.export_deploy_cfg import export_deploy_cfg
 
 try:
+    faulthandler.dump_traceback_later(30, repeat=True)
     cfg = PaintingEnvCfg()
     cfg.scene.num_envs = args.num_envs
     cfg.sim.device = args.device
     cfg.observations.policy.enable_corruption = False
+    print("Creating painting environment", flush=True)
     raw = gym.make("Unitree-G1-29dof-Painting", cfg=cfg)
+    print("Wrapping and resetting painting environment", flush=True)
     env = RslRlVecEnvWrapper(raw, clip_actions=3.0)
+    print("Painting environment reset complete", flush=True)
     obs = env.get_observations()
     assert obs["policy"].shape == (args.num_envs, 5, 93)
-    assert obs["painting"].shape == (args.num_envs, 19)
-    assert obs["critic"].shape == (args.num_envs, 120)
+    assert obs["painting"].shape == (args.num_envs, 27)
+    assert obs["critic"].shape == (args.num_envs, 128)
     assert obs["velocity_targets"].shape == (args.num_envs, 6)
     command = raw.unwrapped.command_manager.get_term("painting_command")
     original_paths = command.points.clone()
@@ -45,6 +50,8 @@ try:
         assert torch.isfinite(reward).all()
         assert all(torch.isfinite(value).all() for value in obs.values())
     command.refresh()
+    assert not command.end_effector_active.any()
+    assert torch.allclose(command.base_velocity_command[:, 0], torch.zeros(args.num_envs, device=args.device))
     print("TCP", command.tcp_position, "target", command.target_world[:, 0], "axis", command.spray_axis)
     # Changing the shared episode counter must not change this command's clock.
     before = command.elapsed.clone()
@@ -63,8 +70,9 @@ try:
     runner.learn(1, init_at_random_ep_len=True)
     runner.alg.policy.export_onnx("/tmp/painting-smoke/exported")
     export_deploy_cfg(raw.unwrapped, "/tmp/painting-smoke", observation_group_names=["policy", "painting"])
-    assert set(raw.unwrapped.termination_manager.active_terms) == {"time_out", "bad_orientation", "success"}
+    assert set(raw.unwrapped.termination_manager.active_terms) == {"time_out", "bad_posture", "success"}
     print("PAINTING SMOKE PASSED: managers, observations, clock, reset, PPO and ONNX")
     env.close()
 finally:
+    faulthandler.cancel_dump_traceback_later()
     app.close()

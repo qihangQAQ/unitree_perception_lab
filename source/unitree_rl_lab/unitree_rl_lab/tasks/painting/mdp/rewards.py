@@ -4,6 +4,8 @@ import math
 
 import torch
 
+from isaaclab.managers import SceneEntityCfg
+
 
 def _command(env, command_name):
     command = env.command_manager.get_term(command_name)
@@ -27,6 +29,21 @@ def velocity_tracking(env, command_name="painting_command", std=0.1):
     )
 
 
+def base_velocity_tracking(env, command_name="painting_command", std=0.15):
+    error = _command(env, command_name).base_velocity_error
+    return torch.exp(-(error / std).square())
+
+
+def base_yaw_rate_tracking(env, command_name="painting_command", std=0.25):
+    error = _command(env, command_name).base_yaw_rate_error
+    return torch.exp(-(error / std).square())
+
+
+def base_anchor_tracking(env, command_name="painting_command", std=0.25):
+    error = torch.linalg.vector_norm(_command(env, command_name).base_anchor_relative, dim=-1)
+    return torch.exp(-(error / std).square())
+
+
 def facing_wall(env, command_name="painting_command", std=math.radians(15)):
     error = _command(env, command_name).facing_error
     return torch.exp(-(error / std).square()).mean(-1)
@@ -39,12 +56,46 @@ def left_arm_down(env, command_name="painting_command", std=0.08):
     return torch.exp(-command.left_arm_error / std) * left_side
 
 
-def body_stability(env, command_name="painting_command"):
-    command = _command(env, command_name)
-    data = command.robot.data
-    error = (command.tilt / 0.3).square() + (data.root_link_lin_vel_w[:, 2] / 0.3).square()
-    error += (data.root_link_ang_vel_b[:, :2] / 0.8).square().sum(-1)
-    return torch.exp(-error)
+def base_height_outside_band(
+    env, command_name="painting_command", target=0.80, tolerance=0.035, normalization=0.05
+):
+    error = (_command(env, command_name).base_height - target).abs()
+    return (torch.relu(error - tolerance) / normalization).square()
+
+
+def pelvis_upright_outside_tolerance(
+    env, command_name="painting_command", tolerance=math.radians(10), normalization=math.radians(15)
+):
+    error = _command(env, command_name).tilt
+    return (torch.relu(error - tolerance) / normalization).square()
+
+
+def torso_upright_outside_tolerance(
+    env, command_name="painting_command", tolerance=math.radians(12), normalization=math.radians(15)
+):
+    error = _command(env, command_name).torso_tilt
+    return (torch.relu(error - tolerance) / normalization).square()
+
+
+def joint_deviation_outside_tolerance(
+    env,
+    tolerance,
+    normalization,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    asset = env.scene[asset_cfg.name]
+    error = (
+        asset.data.joint_pos[:, asset_cfg.joint_ids]
+        - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    ).abs()
+    return ((torch.relu(error - tolerance) / normalization).square()).sum(-1)
+
+
+def torque_saturation(env, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")):
+    asset = env.scene[asset_cfg.name]
+    limits = asset.data.joint_effort_limits[:, asset_cfg.joint_ids].clamp_min(1e-6)
+    ratio = asset.data.applied_torque[:, asset_cfg.joint_ids].abs() / limits
+    return torch.relu(ratio - 0.95).square().sum(-1)
 
 
 def terminal_event(env, event, command_name="painting_command"):

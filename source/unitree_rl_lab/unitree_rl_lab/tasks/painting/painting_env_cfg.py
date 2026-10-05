@@ -15,11 +15,14 @@ from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
+from isaaclab_tasks.manager_based.locomotion.velocity.mdp import feet_slide
 
 from unitree_rl_lab.assets.robots.unitree import G1_CFG
-from unitree_rl_lab.tasks.locomotion.mdp.rewards import energy, feet_slide
+from unitree_rl_lab.painting.trajectories import PaintingPathCfg
+from unitree_rl_lab.tasks.locomotion.mdp.rewards import energy
 
 from .mdp import observations, rewards, terminations
+from .mdp.actions import SafeJointPositionActionCfg
 from .mdp.painting_command import PaintingCommandCfg
 
 
@@ -31,26 +34,44 @@ class PaintingSceneCfg(InteractiveSceneCfg):
         debug_vis=False,
     )
     robot: ArticulationCfg = G1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-    wall = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/Wall",
-        spawn=sim_utils.CuboidCfg(
-            size=(0.1, 26.0, 2.0), collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.65, 0.68, 0.72)),
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.05, 0.0, 1.0)),
-    )
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
     light = AssetBaseCfg(prim_path="/World/light", spawn=sim_utils.DomeLightCfg(intensity=2000.0))
 
 
 @configclass
 class CommandsCfg:
-    painting_command = PaintingCommandCfg()
+    painting_command = PaintingCommandCfg(
+        # Stage A: standing plus balanced left/right lateral stepping.
+        task_mode="side_step",
+        duration_range=(8.0, 12.0),
+        speed_range=(0.2, 0.4),
+        distance_range=(0.05, 0.15),
+        base_speed_range=(0.10, 0.25),
+        standing_probability=0.20,
+        side_step_ramp_time=0.75,
+        right_probability=0.5,
+        prepare_time=1.0,
+        catchup_time=1.5,
+        lookahead_times=(0.0, 0.1, 0.2, 0.4, 0.8),
+        # Path generation.
+        path=PaintingPathCfg(
+            spacing=0.01,
+            height_range=(1.1, 1.4),
+            probabilities=(0.30, 0.20, 0.25, 0.25),
+            connector_length=(0.4, 0.7),
+            straight_length=(0.35, 0.8),
+            wave_length=(0.6, 1.2),
+            shape_height=(0.18, 0.28),
+            samples_per_piece=193,
+        ),
+        # Training keeps markers disabled; PaintingPlayEnvCfg enables them.
+        debug_vis=False,
+    )
 
 
 @configclass
 class ActionsCfg:
-    JointPositionAction = base_mdp.JointPositionActionCfg(
+    JointPositionAction = SafeJointPositionActionCfg(
         asset_name="robot", joint_names=[".*"], use_default_offset=True,
         scale={".*_hip_.*": 0.25, ".*_knee_joint": 0.25, ".*_ankle_.*": 0.25,
                "waist_.*": 0.2, ".*_shoulder_.*": 0.5, ".*_elbow_joint": 0.5, ".*_wrist_.*": 0.4},
@@ -127,16 +148,66 @@ class EventsCfg:
 
 @configclass
 class RewardsCfg:
-    tcp_position = RewTerm(func=rewards.position_tracking, weight=5.0)
-    spray_axis = RewTerm(func=rewards.axis_tracking, weight=2.0)
-    tcp_velocity = RewTerm(func=rewards.velocity_tracking, weight=1.0)
-    facing_wall = RewTerm(func=rewards.facing_wall, weight=1.0)
-    left_arm_down = RewTerm(func=rewards.left_arm_down, weight=1.0)
-    body_stability = RewTerm(func=rewards.body_stability, weight=0.5)
-    action_rate = RewTerm(func=base_mdp.action_rate_l2, weight=-0.01)
+    # Stage-A task signal. TCP fields remain in the observation contract but
+    # are explicitly inactive until the horizontal coordination stage.
+    base_velocity = RewTerm(func=rewards.base_velocity_tracking, weight=2.5, params={"std": 0.15})
+    base_yaw_rate = RewTerm(func=rewards.base_yaw_rate_tracking, weight=0.5, params={"std": 0.25})
+    base_anchor = RewTerm(func=rewards.base_anchor_tracking, weight=0.25, params={"std": 0.25})
+    facing_wall = RewTerm(func=rewards.facing_wall, weight=0.25)
+    alive = RewTerm(func=base_mdp.is_alive, weight=0.15)
+
+    # Physical posture terms are kept separate so a large error in one term
+    # cannot hide all other posture information inside a single exponential.
+    base_height = RewTerm(func=rewards.base_height_outside_band, weight=-1.0)
+    pelvis_upright = RewTerm(func=rewards.pelvis_upright_outside_tolerance, weight=-0.5)
+    torso_upright = RewTerm(func=rewards.torso_upright_outside_tolerance, weight=-0.5)
+    vertical_velocity = RewTerm(func=base_mdp.lin_vel_z_l2, weight=-1.0)
+    roll_pitch_rate = RewTerm(func=base_mdp.ang_vel_xy_l2, weight=-0.1)
+    leg_lateral_posture = RewTerm(
+        func=rewards.joint_deviation_outside_tolerance,
+        weight=-0.2,
+        params={
+            "tolerance": 0.15,
+            "normalization": 0.35,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*_hip_roll_joint", ".*_hip_yaw_joint"]),
+        },
+    )
+    waist_posture = RewTerm(
+        func=rewards.joint_deviation_outside_tolerance,
+        weight=-0.1,
+        params={
+            "tolerance": 0.15,
+            "normalization": 0.35,
+            "asset_cfg": SceneEntityCfg("robot", joint_names=["waist_.*"]),
+        },
+    )
+    left_arm_posture = RewTerm(
+        func=rewards.joint_deviation_outside_tolerance,
+        weight=-0.03,
+        params={
+            "tolerance": 0.25,
+            "normalization": 0.5,
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=["left_shoulder_.*", "left_elbow_joint", "left_wrist_.*"]
+            ),
+        },
+    )
+    right_arm_posture = RewTerm(
+        func=rewards.joint_deviation_outside_tolerance,
+        weight=-0.03,
+        params={
+            "tolerance": 0.25,
+            "normalization": 0.5,
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=["right_shoulder_.*", "right_elbow_joint", "right_wrist_.*"]
+            ),
+        },
+    )
+    action_rate = RewTerm(func=base_mdp.action_rate_l2, weight=-0.02)
     joint_acc = RewTerm(func=base_mdp.joint_acc_l2, weight=-2.5e-7)
-    joint_limits = RewTerm(func=base_mdp.joint_pos_limits, weight=-2.0)
+    joint_limits = RewTerm(func=base_mdp.joint_pos_limits, weight=-5.0)
     energy = RewTerm(func=energy, weight=-1e-4)
+    torque_saturation = RewTerm(func=rewards.torque_saturation, weight=-0.1)
     feet_slide = RewTerm(
         func=feet_slide, weight=-0.25,
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll.*"),
@@ -147,14 +218,21 @@ class RewardsCfg:
         params={"threshold": 1.0, "sensor_cfg": SceneEntityCfg("contact_forces", body_names="(?!.*ankle.*).*")},
     )
     success = RewTerm(func=rewards.terminal_event, weight=5.0, params={"event": "success"})
-    bad_orientation = RewTerm(func=rewards.terminal_event, weight=-5.0, params={"event": "bad"})
+    bad_posture = RewTerm(func=rewards.terminal_event, weight=-10.0, params={"event": "bad"})
 
 
 @configclass
 class TerminationsCfg:
     time_out = DoneTerm(func=terminations.time_out, time_out=True)
-    bad_orientation = DoneTerm(func=terminations.bad_orientation)
-    success = DoneTerm(func=terminations.success, time_out=True)
+    bad_posture = DoneTerm(
+        func=terminations.bad_posture,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names="(?!.*ankle.*).*"),
+            "threshold": 1.0,
+            "debounce_time": 0.08,
+        },
+    )
+    success = DoneTerm(func=terminations.success, time_out=False)
 
 
 @configclass
