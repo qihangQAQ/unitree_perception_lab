@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 from isaaclab.managers import SceneEntityCfg
 
+from unitree_rl_lab.fdm.utils.contact import any_body_contact, recent_body_contacts
 from unitree_rl_lab.fdm.utils.height_map import door_aware_height_map
 
 
@@ -86,5 +87,9 @@ def navigation_collision(
     threshold: float = 1.0,
 ) -> torch.Tensor:
     sensor = env.scene.sensors[sensor_cfg.name]
-    forces = sensor.data.net_forces_w[:, sensor_cfg.body_ids]
-    return torch.any(torch.linalg.vector_norm(forces, dim=-1) > threshold, dim=-1)
+    contacts = recent_body_contacts(
+        sensor.data.net_forces_w_history,
+        physics_steps=env.cfg.decimation,
+        threshold=threshold,
+    )
+    return any_body_contact(contacts, sensor_cfg.body_ids)

@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as functional
 
 from unitree_rl_lab.fdm.config import FDMModelCfg, TrainCfg
 from unitree_rl_lab.fdm.models import G1HeightFDM
@@ -34,3 +35,64 @@ def test_all_at_once_model_shapes_and_backward():
     assert torch.isfinite(loss)
     loss.backward()
     assert model.collision_decoder[-1].weight.grad is not None
+
+
+def test_trajectory_loss_sums_per_step_mse_with_original_weights():
+    cfg = TrainCfg()
+    predicted_pose = torch.tensor([1.0, 3.0, 2.0, 4.0]).expand(2, 10, 4).clone()
+    prediction = {
+        "future_pose": predicted_pose,
+        "collision_logits": torch.zeros(2, 10),
+    }
+    target = {
+        "future_pose": torch.zeros_like(predicted_pose),
+        "future_collision": torch.zeros(2, 10),
+        "valid_mask": torch.ones(2, 10, dtype=torch.bool),
+    }
+
+    losses = FDMLoss(cfg)(prediction, target)
+
+    # Mean over the two pose channels at each horizon step, then sum ten steps.
+    torch.testing.assert_close(losses["position_loss"], torch.tensor(10 * (1.0**2 + 3.0**2) / 2))
+    torch.testing.assert_close(losses["heading_loss"], torch.tensor(10 * (2.0**2 + 4.0**2) / 2))
+    torch.testing.assert_close(losses["collision_loss"], torch.log(torch.tensor(2.0)))
+    torch.testing.assert_close(
+        losses["loss"],
+        cfg.position_weight * losses["position_loss"]
+        + cfg.heading_weight * losses["heading_loss"]
+        + cfg.collision_weight * losses["collision_loss"],
+    )
+
+
+def test_trajectory_loss_respects_step_masks_and_keeps_collision_bce_mean():
+    predicted_pose = torch.zeros(2, 10, 4)
+    predicted_pose[0, 0, :2] = torch.tensor([1.0, 3.0])
+    predicted_pose[1, 0, :2] = 100.0  # Invalid at step zero.
+    predicted_pose[0, 1, :2] = torch.tensor([2.0, 4.0])
+    predicted_pose[1, 1, :2] = torch.tensor([4.0, 6.0])
+    predicted_pose[:, 2, :2] = 100.0  # No valid samples at this step.
+    predicted_pose[0, 0, 2:] = torch.tensor([2.0, 4.0])
+    predicted_pose[0, 1, 2:] = torch.tensor([1.0, 3.0])
+    predicted_pose[1, 1, 2:] = torch.tensor([3.0, 5.0])
+    logits = torch.zeros(2, 10)
+    logits[0, 0] = 0.7
+    logits[0, 1] = -0.5
+    logits[1, 1] = 1.2
+    collision = torch.zeros(2, 10)
+    collision[0, 1] = 1.0
+    valid = torch.zeros(2, 10, dtype=torch.bool)
+    valid[0, 0] = valid[0, 1] = valid[1, 1] = True
+
+    losses = FDMLoss(TrainCfg(), collision_pos_weight=2.5)(
+        {"future_pose": predicted_pose, "collision_logits": logits},
+        {"future_pose": torch.zeros_like(predicted_pose), "future_collision": collision, "valid_mask": valid},
+    )
+
+    expected_position = (1.0**2 + 3.0**2) / 2 + (2.0**2 + 4.0**2 + 4.0**2 + 6.0**2) / 4
+    expected_heading = (2.0**2 + 4.0**2) / 2 + (1.0**2 + 3.0**2 + 3.0**2 + 5.0**2) / 4
+    expected_collision = functional.binary_cross_entropy_with_logits(
+        logits[valid], collision[valid], pos_weight=torch.tensor(2.5)
+    )
+    torch.testing.assert_close(losses["position_loss"], torch.tensor(expected_position))
+    torch.testing.assert_close(losses["heading_loss"], torch.tensor(expected_heading))
+    torch.testing.assert_close(losses["collision_loss"], expected_collision)

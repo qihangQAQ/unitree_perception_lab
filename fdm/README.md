@@ -9,7 +9,8 @@
 - 策略仍使用 283 维 observation、29 维关节 action 和 recurrent hidden state。
 - FDM 输入为最新优先的 `[10, 5]` state history、`[10, 96]` proprio history、`[1, 60, 46]` height map 和预先生成的 `[10, 3]` command plan。
 - 模型使用参考 FDM 的 all-at-once 解码：command GRU 的 10 个输出一起展平，再联合预测 10 步速度修正和碰撞 logits。
-- 碰撞事件立即写盘，termination 延迟一个 policy step；碰撞 target 后续 pose 冻结，但 command plan 保持碰撞前的原计划。
+- 碰撞标签和 termination 统一检查当前 policy step 内 4 个物理子步的接触力；碰撞事件立即写盘，termination 延迟一个 policy step。碰撞 target 后续 pose 冻结，command plan 保持碰撞前的原计划。
+- 位置与航向损失对每个预测步分别计算 MSE 均值，再对 10 步求和；碰撞 BCE 对有效预测步取均值。
 - USD origin 先按连续空间块固定划分 train/val/test，再在 episode 内切窗口。
 - 正式采集默认保留 policy observation corruption。调试时才使用 `--disable-policy-corruption`。
 - FDM 的 `60 × 46` 大范围高程图按参考项目进行门洞识别：从世界高度 0.5 m 再向下、向上探测，满足 1.25 m 净空条件时用下方地面命中替换顶部横梁命中。采集器批量处理同一仿真步的记录帧，不修改冻结策略使用的局部高程图或射线传感器原始命中。数据 schema 为 v3，旧版数据须单独保存。

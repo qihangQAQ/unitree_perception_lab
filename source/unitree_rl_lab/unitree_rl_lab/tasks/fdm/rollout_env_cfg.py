@@ -118,6 +118,7 @@ class EventsCfg:
             "velocity_range": (0.0, 0.0),
         },
     )
+    clear_collision_delay = EventTerm(func=mdp.clear_fdm_collision_delay, mode="reset")
 
 
 @configclass

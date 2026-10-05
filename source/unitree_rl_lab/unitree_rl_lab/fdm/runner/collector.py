@@ -9,6 +9,7 @@ import torch
 from ..config import RolloutCfg
 from ..data.schema import EpisodeBuilder, Split, TerminationReason
 from ..data.shard_writer import EpisodeShardWriter
+from ..utils.contact import any_body_contact, recent_body_contacts
 from ..utils.height_map import door_aware_height_map
 from .command_planner import CorrelatedCommandPlanner
 from .frozen_policy import FrozenRecurrentPolicy
@@ -106,10 +107,14 @@ class FDMRolloutCollector:
         return float(self.env.common_step_counter * self.env.step_dt)
 
     def _collision_and_groups(self) -> tuple[torch.Tensor, torch.Tensor]:
-        forces = torch.linalg.vector_norm(self.contact_sensor.data.net_forces_w, dim=-1)
-        collision = torch.any(forces[:, self.navigation_body_ids] > self.cfg.collision_force_threshold, dim=-1)
+        contacts = recent_body_contacts(
+            self.contact_sensor.data.net_forces_w_history,
+            physics_steps=self.env.cfg.decimation,
+            threshold=self.cfg.collision_force_threshold,
+        )
+        collision = any_body_contact(contacts, self.navigation_body_ids)
         groups = torch.stack(
-            [torch.any(forces[:, ids] > self.cfg.collision_force_threshold, dim=-1) for ids in self.contact_group_ids],
+            [any_body_contact(contacts, ids) for ids in self.contact_group_ids],
             dim=-1,
         )
         return collision, groups

@@ -17,6 +17,14 @@ def _masked_mean(value: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return (value * mask_value).sum() / denominator
 
 
+def _masked_per_step_mean_sum(value: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Sum horizon losses after averaging valid samples and channels at each step."""
+    mask_value = mask.to(value.dtype).unsqueeze(-1)
+    step_sum = (value * mask_value).sum(dim=(0, 2))
+    step_count = (mask_value.sum(dim=0).squeeze(-1) * value.shape[-1]).clamp_min(1.0)
+    return (step_sum / step_count).sum()
+
+
 class FDMLoss(nn.Module):
     """Position, heading, cumulative collision, and post-collision stop loss."""
 
@@ -34,11 +42,11 @@ class FDMLoss(nn.Module):
         predicted_pose = prediction["future_pose"]
         target_pose = target["future_pose"]
         valid = target["valid_mask"].bool()
-        position = _masked_mean(
-            functional.smooth_l1_loss(predicted_pose[..., :2], target_pose[..., :2], reduction="none"), valid
+        position = _masked_per_step_mean_sum(
+            functional.mse_loss(predicted_pose[..., :2], target_pose[..., :2], reduction="none"), valid
         )
-        heading = _masked_mean(
-            functional.smooth_l1_loss(predicted_pose[..., 2:4], target_pose[..., 2:4], reduction="none"), valid
+        heading = _masked_per_step_mean_sum(
+            functional.mse_loss(predicted_pose[..., 2:4], target_pose[..., 2:4], reduction="none"), valid
         )
         collision_elementwise = functional.binary_cross_entropy_with_logits(
             prediction["collision_logits"],

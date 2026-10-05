@@ -39,8 +39,9 @@ def git_commit() -> str:
 
 
 def configure_safe_spawn(env_cfg, rollout_cfg) -> None:
-    """Copy recorded rollout settings into the stateful terrain-analysis reset term."""
+    """Copy recorded rollout settings into reset and collision terms."""
 
+    env_cfg.terminations.navigation_collision.params["threshold"] = rollout_cfg.collision_force_threshold
     reset = env_cfg.events.reset_base
     reset.params["xy_jitter"] = rollout_cfg.spawn_xy_jitter
     analysis = reset.func
@@ -67,6 +68,12 @@ def dataset_metadata(env, rollout_cfg) -> dict[str, Any]:
     return {
         "task": rollout_cfg.task_name,
         "schema_semantics": "command-boundary frames, newest-first history, rolling command_plan",
+        "collision_detection": {
+            "version": "policy_step_physics_history_v1",
+            "history_samples": int(env.unwrapped.cfg.decimation),
+            "threshold_n": rollout_cfg.collision_force_threshold,
+            "body_names": rollout_cfg.collision_body_names,
+        },
         "git_commit": git_commit(),
         "rollout": rollout_values,
         "policy_checkpoint": str(checkpoint),
