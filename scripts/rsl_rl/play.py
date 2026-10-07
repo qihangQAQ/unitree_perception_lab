@@ -38,6 +38,7 @@ parser.add_argument(
 )
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments (defaults to one).")
 parser.add_argument("--task", type=str, required=True, help="Name of the task.")
+parser.add_argument("--motion_file", type=str, default=None, help="Override the reference motion NPZ for a mimic task.")
 parser.add_argument(
     "--terrain",
     type=str,
@@ -362,6 +363,14 @@ def main():
         use_fabric=not args_cli.disable_fabric,
         entry_point_key="play_env_cfg_entry_point",
     )
+    if args_cli.motion_file is not None:
+        motion_cfg = getattr(getattr(env_cfg, "commands", None), "motion", None)
+        if motion_cfg is None or not hasattr(motion_cfg, "motion_file"):
+            raise ValueError(f"Task {args_cli.task!r} has no reference motion to override.")
+        motion_file = os.path.abspath(args_cli.motion_file)
+        if not os.path.isfile(motion_file):
+            raise FileNotFoundError(f"Reference motion does not exist: {motion_file}")
+        motion_cfg.motion_file = motion_file
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
 
     policy_obs_cfg = getattr(getattr(env_cfg, "observations", None), "policy", None)

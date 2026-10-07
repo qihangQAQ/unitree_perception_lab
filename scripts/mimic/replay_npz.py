@@ -10,6 +10,7 @@
 
 import argparse
 import numpy as np
+import time
 import torch
 
 from isaaclab.app import AppLauncher
@@ -77,12 +78,10 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
 
     # Simulation loop
     while simulation_app.is_running():
-        time_steps += 1
-        reset_ids = time_steps >= motion.time_step_total
-        time_steps[reset_ids] = 0
+        frame_start = time.perf_counter()
 
         root_states = robot.data.default_root_state.clone()
-        root_states[:, :3] = motion.body_pos_w[time_steps][:, 0] + scene.env_origins[:, None, :]
+        root_states[:, :3] = motion.body_pos_w[time_steps][:, 0] + scene.env_origins
         root_states[:, 3:7] = motion.body_quat_w[time_steps][:, 0]
         root_states[:, 7:10] = motion.body_lin_vel_w[time_steps][:, 0]
         root_states[:, 10:] = motion.body_ang_vel_w[time_steps][:, 0]
@@ -90,16 +89,19 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
         robot.write_root_state_to_sim(root_states)
         robot.write_joint_state_to_sim(motion.joint_pos[time_steps], motion.joint_vel[time_steps])
         scene.write_data_to_sim()
+        pos_lookat = root_states[0, :3].cpu().numpy()
+        sim.set_camera_view(pos_lookat + np.array([2.0, 2.0, 0.5]), pos_lookat)
         sim.render()  # We don't want physic (sim.step())
         scene.update(sim_dt)
 
-        pos_lookat = root_states[0, :3].cpu().numpy()
-        sim.set_camera_view(pos_lookat + np.array([2.0, 2.0, 0.5]), pos_lookat)
+        time_steps = (time_steps + 1) % motion.time_step_total
+        time.sleep(max(0.0, sim_dt - (time.perf_counter() - frame_start)))
 
 
 def main():
     sim_cfg = sim_utils.SimulationCfg(device=args_cli.device)
-    sim_cfg.dt = 0.02
+    with np.load(args_cli.file, allow_pickle=False) as motion_data:
+        sim_cfg.dt = 1.0 / float(np.asarray(motion_data["fps"]).reshape(-1)[0])
     sim = SimulationContext(sim_cfg)
 
     scene_cfg = ReplayMotionsSceneCfg(num_envs=1, env_spacing=2.0)

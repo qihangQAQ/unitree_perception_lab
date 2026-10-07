@@ -9,6 +9,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import numpy as np
 
 from isaaclab.app import AppLauncher
@@ -16,7 +17,7 @@ from isaaclab.app import AppLauncher
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Replay motion from csv file and output to npz file.")
 parser.add_argument("--input_file", "-f", type=str, required=True, help="The path to the input motion csv file.")
-parser.add_argument("--input_fps", type=int, default=60, help="The fps of the input motion.")
+parser.add_argument("--input_fps", type=float, default=60.0, help="The fps of the input motion.")
 parser.add_argument(
     "--frame_range",
     nargs=2,
@@ -29,6 +30,7 @@ parser.add_argument(
 )
 parser.add_argument("--output_name", type=str, help="The name of the motion npz file.")
 parser.add_argument("--output_fps", type=int, default=50, help="The fps of the output motion.")
+parser.add_argument("--exit_after_save", action="store_true", help="Close the simulator after saving the NPZ file.")
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -87,7 +89,7 @@ class MotionLoader:
     def __init__(
         self,
         motion_file: str,
-        input_fps: int,
+        input_fps: float,
         output_fps: int,
         device: torch.device,
         frame_range: tuple[int, int] | None,
@@ -304,7 +306,11 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
                 log[k] = np.stack(log[k], axis=0)
 
             np.savez(args_cli.output_name, **log)
-            print("[INFO]: Motion npz file saved to", args_cli.output_name)
+            print("[INFO]: Motion npz file saved to", args_cli.output_name, flush=True)
+            if args_cli.exit_after_save:
+                # Isaac Sim can hang during shutdown after this one-shot conversion.
+                # np.savez has closed the file, so the subprocess can exit directly.
+                os._exit(0)
 
 
 def main():
