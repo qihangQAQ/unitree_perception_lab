@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+import traceback
 from enum import IntEnum
 
 import torch
@@ -9,8 +11,9 @@ import torch
 from ..config import RolloutCfg
 from ..data.schema import EpisodeBuilder, Split, TerminationReason
 from ..data.shard_writer import EpisodeShardWriter
-from ..utils.contact import any_body_contact, recent_body_contacts
+from ..utils.contact import any_body_contact
 from ..utils.height_map import door_aware_height_map
+from .collection_log import CollectionLog, CollectionTracker
 from .command_planner import CorrelatedCommandPlanner
 from .frozen_policy import FrozenRecurrentPolicy
 
@@ -52,7 +55,10 @@ class FDMRolloutCollector:
         self.planner = CorrelatedCommandPlanner(
             self.num_envs, cfg.prediction_horizon, cfg.command, self.device, cfg.seed
         )
-        self.planner.reset()
+        self._command_seconds = 0.0
+        self._tracker: CollectionTracker | None = None
+        self._episode_force_peaks = torch.zeros(self.num_envs, 3, device=self.device)
+        self._plan("reset")
 
         self.phase = torch.full((self.num_envs,), int(_Phase.SETTLING), device=self.device, dtype=torch.int8)
         self.settle_steps = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
@@ -107,10 +113,11 @@ class FDMRolloutCollector:
         return float(self.env.common_step_counter * self.env.step_dt)
 
     def _collision_and_groups(self) -> tuple[torch.Tensor, torch.Tensor]:
-        contacts = recent_body_contacts(
-            self.contact_sensor.data.net_forces_w_history,
-            physics_steps=self.env.cfg.decimation,
-            threshold=self.cfg.collision_force_threshold,
+        forces = self.contact_sensor.data.net_forces_w_history[:, :self.env.cfg.decimation]
+        force_norm = torch.linalg.vector_norm(forces, dim=-1)
+        contacts = torch.any(force_norm > self.cfg.collision_force_threshold, dim=1)
+        self._step_force_peaks = torch.stack(
+            [force_norm[:, :, ids].amax(dim=(1, 2)) for ids in self.contact_group_ids], dim=-1
         )
         collision = any_body_contact(contacts, self.navigation_body_ids)
         groups = torch.stack(
@@ -165,6 +172,11 @@ class FDMRolloutCollector:
         self.history_elapsed[env_ids] -= self.cfg.history_timestep
         self._push_history(env_ids, raw_state, timestamp)
 
+    def _plan(self, method: str, *args) -> None:
+        started = time.monotonic()
+        getattr(self.planner, method)(*args)
+        self._command_seconds += time.monotonic() - started
+
     def _set_commands(self, env_ids: torch.Tensor, commands: torch.Tensor) -> None:
         if len(env_ids) == 0:
             return
@@ -218,12 +230,17 @@ class FDMRolloutCollector:
             usd_region_split=split_id.cpu(),
         )
         self.last_frame_timestamp[env_id] = timestamp
+        if self._tracker is not None:
+            self._tracker.frames += 1
 
     def _finish_episode(self, env_id: int) -> None:
         builder = self.builders[env_id]
         if builder is not None and builder.num_frames > 0 and self.completed_episodes < self._target_episodes:
             self.writer.append(builder.finalize())
             self.completed_episodes += 1
+            if self._tracker is not None:
+                self._tracker.force_peaks = torch.maximum(self._tracker.force_peaks, self._episode_force_peaks[env_id])
+                self._tracker.accepted_force_episodes += 1
         self.builders[env_id] = None
 
     def _begin_warmup(self, env_ids: torch.Tensor) -> None:
@@ -236,18 +253,19 @@ class FDMRolloutCollector:
         self.state_history[env_ids] = 0.0
         self.proprio_history[env_ids] = 0.0
         self.history_timestamps[env_ids] = 0.0
-        self.planner.reset(env_ids)
+        self._plan("reset", env_ids)
         self._set_commands(env_ids, self.planner.command[env_ids])
 
     def _begin_episode_after_warmup(self, env_id: int, contact_groups: torch.Tensor, timestamp: float) -> None:
         env_ids = torch.tensor([env_id], device=self.device)
-        self.planner.advance(env_ids)
+        self._plan("advance", env_ids)
         self.phase[env_id] = int(_Phase.ACTIVE)
         self.steps_remaining[env_id] = self.cfg.policy_steps_per_command
         self.active_commands[env_id] = 0
         self.episode_ids[env_id] = self._next_episode_id
         self._next_episode_id += 1
         self.builders[env_id] = EpisodeBuilder()
+        self._episode_force_peaks[env_id] = 0.0
         self._record_frame(
             env_id,
             collision=False,
@@ -264,6 +282,10 @@ class FDMRolloutCollector:
         env_ids = torch.nonzero(done).flatten()
         if len(env_ids) == 0:
             return
+        if self._tracker is not None:
+            self._tracker.counters[0] += (self.phase[env_ids] == int(_Phase.SETTLING)).sum()
+            self._tracker.counters[2] += (self.phase[env_ids] == int(_Phase.WARMUP)).sum()
+            self._tracker.counters[3] += len(env_ids)
         for env_id in env_ids.tolist():
             if self.phase[env_id] == int(_Phase.ACTIVE):
                 builder = self.builders[env_id]
@@ -283,7 +305,7 @@ class FDMRolloutCollector:
         self.builders = [
             None if index in reset_indices else value for index, value in enumerate(self.builders)
         ]
-        self.planner.reset(env_ids)
+        self._plan("reset", env_ids)
         self._set_commands(env_ids, torch.zeros(len(env_ids), 3, device=self.device))
 
     def _selective_reset(self, env_ids: torch.Tensor, *, rejected_spawn: bool) -> None:
@@ -291,6 +313,9 @@ class FDMRolloutCollector:
 
         if len(env_ids) == 0:
             return
+        if self._tracker is not None:
+            self._tracker.counters[0] += len(env_ids) if rejected_spawn else 0
+            self._tracker.counters[3] += len(env_ids)
         self.env._reset_idx(env_ids)
         self.env.scene.write_data_to_sim()
         self.env.sim.forward()
@@ -311,24 +336,59 @@ class FDMRolloutCollector:
         else:
             self.spawn_attempts[env_ids] = 1
         self.history_count[env_ids] = 0
-        self.planner.reset(env_ids)
+        self._plan("reset", env_ids)
         self._set_commands(env_ids, torch.zeros(len(env_ids), 3, device=self.device))
 
-    def collect(self, num_episodes: int) -> dict[str, int]:
-        """Collect exactly ``num_episodes`` complete trajectories (up to same-step overshoot suppression)."""
-
+    def collect(
+        self, num_episodes: int, *, log_interval_s: float = 10.0,
+        log: CollectionLog | None = None, round_index: int | None = None,
+    ) -> dict:
+        """Collect exactly the requested complete episodes and report diagnostics."""
         if num_episodes < 1:
             raise ValueError("num_episodes must be positive.")
         self._target_episodes = self.completed_episodes + num_episodes
+        tracker = CollectionTracker(self, num_episodes, log_interval_s, log, round_index)
+        self._tracker = tracker
+        try:
+            self._collect_steps(tracker)
+            self.writer.flush()
+            record = tracker.update(force=True, status="completed")
+            return {"episodes": num_episodes, "total_completed": self.completed_episodes, **record}
+        except BaseException as exc:
+            # Kit shutdown can take time; surface the original failure first.
+            traceback.print_exc()
+            tracker.update(
+                force=True, status="interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "failed",
+                error={"type": type(exc).__name__, "message": str(exc)},
+            )
+            raise
+        finally:
+            self._tracker = None
+
+    @torch.inference_mode()
+    def _collect_steps(self, tracker: CollectionTracker) -> None:
+        # env.step and the recurrent actor create inference tensors. Command
+        # patches, selective resets and hidden-state resets must share that mode.
         max_settle_steps = max(250, self.cfg.initial_settle_steps)
         while self.completed_episodes < self._target_episodes:
             self._frame_maps.clear()
+            started = time.monotonic()
             with torch.inference_mode():
                 actions = self.policy.act(self.observations)
+                after_policy = time.monotonic()
                 observations, _, terminated, truncated, _ = self.env.step(actions)
+            after_sim = time.monotonic()
+            tracker.policy_seconds += after_policy - started
+            tracker.sim_seconds += after_sim - after_policy
+            command_before = self._command_seconds
+            write_before = self.writer.write_seconds
             self.observations = observations
             done = terminated | truncated
             collision, groups = self._collision_and_groups()
+            active = (self.phase == int(_Phase.ACTIVE)) & ~done
+            self._episode_force_peaks = torch.maximum(
+                self._episode_force_peaks, torch.where(active[:, None], self._step_force_peaks, 0.0)
+            )
             timestamp = self._simulation_time()
             raw_state = self._raw_state(collision)
             self._sample_due_history(raw_state, timestamp)
@@ -360,6 +420,7 @@ class FDMRolloutCollector:
                 )
 
             warmup_collision = (self.phase == int(_Phase.WARMUP)) & collision & ~done
+            tracker.counters[1] += warmup_collision.sum()
             self.phase[warmup_collision] = int(_Phase.WAITING_FOR_RESET)
 
             moving = ((self.phase == int(_Phase.WARMUP)) | (self.phase == int(_Phase.ACTIVE))) & ~collision & ~done
@@ -392,7 +453,7 @@ class FDMRolloutCollector:
                     )
                 else:
                     env_ids = torch.tensor([env_id], device=self.device)
-                    self.planner.advance(env_ids)
+                    self._plan("advance", env_ids)
                     self._record_frame(
                         env_id,
                         collision=False,
@@ -427,6 +488,8 @@ class FDMRolloutCollector:
                 )
 
             self._handle_resets(done)
-
-        self.writer.flush()
-        return {"episodes": num_episodes, "total_completed": self.completed_episodes}
+            tracker.data_seconds += max(
+                0.0, time.monotonic() - after_sim - (self._command_seconds - command_before)
+                - (self.writer.write_seconds - write_before)
+            )
+            tracker.update()

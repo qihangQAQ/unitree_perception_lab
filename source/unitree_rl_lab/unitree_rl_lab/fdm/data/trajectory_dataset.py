@@ -11,8 +11,11 @@ import torch
 from torch.utils.data import Dataset, WeightedRandomSampler
 
 from ..utils.se2 import relative_pose_sequence
+from ..utils.progress import ProgressLogger
 from .schema import EpisodeData
 from .shard_writer import read_manifest
+from .statistics import DatasetStatistics
+from .window import window_targets
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,9 @@ class FDMWindowDataset(Dataset[dict[str, torch.Tensor]]):
         include_incomplete_noncollision: bool = False,
         low_motion_threshold: float = 0.05,
         shard_paths: list[str | Path] | None = None,
+        log_interval_s: float = 10.0,
+        collect_statistics: bool = False,
+        allow_empty: bool = False,
     ) -> None:
         self.root, manifest = read_manifest(root_or_manifest)
         allowed = None if shard_paths is None else {str(Path(path).resolve()) for path in shard_paths}
@@ -46,15 +52,25 @@ class FDMWindowDataset(Dataset[dict[str, torch.Tensor]]):
             if item["split"] == split
             and (allowed is None or str((self.root / item["path"]).resolve()) in allowed)
         ]
-        if not self.shards:
+        if not self.shards and not allow_empty:
             raise ValueError(f"No {split!r} shards in {self.root / 'manifest.json'}.")
+        self.split = split
+        self.command_timestep = float(manifest["metadata"].get("rollout", {}).get("command_timestep", 0.5))
+        self.statistics = None
+        self._statistics_accumulator = (
+            DatasetStatistics(horizon, self.command_timestep, low_motion_threshold) if collect_statistics else None
+        )
         self.horizon = horizon
         self.cache_size = max(1, cache_size)
         self.include_incomplete_noncollision = include_incomplete_noncollision
         self.low_motion_threshold = low_motion_threshold
         self._cache: OrderedDict[int, list[EpisodeData]] = OrderedDict()
-        self.indices = self._build_index()
-        if not self.indices:
+        progress = ProgressLogger(f"index split={split}", len(self.shards), unit="shards", interval_s=log_interval_s)
+        self.indices = self._build_index(progress)
+        if self._statistics_accumulator is not None:
+            self.statistics = self._statistics_accumulator.result()
+            self._statistics_accumulator = None
+        if not self.indices and not allow_empty:
             raise ValueError(f"No valid horizon-{horizon} windows were found for split {split!r}.")
 
     def _load_shard(self, shard_index: int) -> list[EpisodeData]:
@@ -69,10 +85,11 @@ class FDMWindowDataset(Dataset[dict[str, torch.Tensor]]):
             self._cache.popitem(last=False)
         return episodes
 
-    def _build_index(self) -> list[WindowIndex]:
+    def _build_index(self, progress: ProgressLogger) -> list[WindowIndex]:
         output: list[WindowIndex] = []
         for shard_index in range(len(self.shards)):
             for episode_index, episode in enumerate(self._load_shard(shard_index)):
+                first_index = len(output)
                 current_xy = episode.state_history_raw[:, 0, :2]
                 for start in range(episode.num_frames):
                     if not bool(episode.has_outgoing_command[start]) or bool(episode.collision_now[start]):
@@ -98,7 +115,12 @@ class FDMWindowDataset(Dataset[dict[str, torch.Tensor]]):
                             displacement < self.low_motion_threshold,
                         )
                     )
+                if self._statistics_accumulator is not None:
+                    self._statistics_accumulator.update_episode(episode, output[first_index:])
+                progress.update(shard_index, detail=lambda: f"windows={len(output)}")
+            progress.update(shard_index + 1, detail=lambda: f"windows={len(output)}")
         self._cache.clear()
+        progress.update(len(self.shards), detail=lambda: f"windows={len(output)}", force=True)
         return output
 
     def __len__(self) -> int:
@@ -109,58 +131,16 @@ class FDMWindowDataset(Dataset[dict[str, torch.Tensor]]):
         episode = self._load_shard(item.shard)[item.episode]
         start = item.start
         state_history = episode.state_history_raw[start]
-        current_position = state_history[0, :3]
-        current_quaternion = state_history[0, 3:7]
-
         history_pose = relative_pose_sequence(state_history[:, :3], state_history[:, 3:7], anchor=0)
         relative_state = torch.cat((history_pose, state_history[:, 7:8]), dim=-1)
-
-        future_positions: list[torch.Tensor] = []
-        future_quaternions: list[torch.Tensor] = []
-        collisions: list[bool] = []
-        valid: list[bool] = []
-        frozen_position: torch.Tensor | None = None
-        frozen_quaternion: torch.Tensor | None = None
-        collided = False
-        for horizon_step in range(1, self.horizon + 1):
-            target_index = start + horizon_step
-            if frozen_position is not None:
-                future_positions.append(frozen_position)
-                future_quaternions.append(frozen_quaternion)  # type: ignore[arg-type]
-                collisions.append(True)
-                valid.append(True)
-                continue
-            if target_index >= episode.num_frames:
-                future_positions.append(current_position)
-                future_quaternions.append(current_quaternion)
-                collisions.append(False)
-                valid.append(False)
-                continue
-            target_state = episode.state_history_raw[target_index, 0]
-            collided = collided or bool(episode.collision_now[target_index])
-            future_positions.append(target_state[:3])
-            future_quaternions.append(target_state[3:7])
-            collisions.append(collided)
-            valid.append(True)
-            if collided:
-                frozen_position = target_state[:3]
-                frozen_quaternion = target_state[3:7]
-
-        target_pose_world = relative_pose_sequence(
-            torch.stack((current_position, *future_positions)),
-            torch.stack((current_quaternion, *future_quaternions)),
-            anchor=0,
-        )[1:]
+        target = window_targets(episode, torch.tensor([start]), self.horizon)
         return {
             "relative_state_history": relative_state.float(),
             "proprio_history": episode.proprio_history[start].float(),
             "history_timestamps": (episode.history_timestamps[start] - episode.timestamp[start]).float(),
             "height_map": episode.height_map[start].float(),
             "height_map_invalid": episode.height_map_invalid[start],
-            "future_commands": episode.command_plan[start].float(),
-            "future_pose": target_pose_world.float(),
-            "future_collision": torch.tensor(collisions, dtype=torch.float32),
-            "valid_mask": torch.tensor(valid, dtype=torch.bool),
+            **{name: value[0] for name, value in target.items()},
             "contains_collision": torch.tensor(item.collision),
             "low_motion": torch.tensor(item.low_motion),
         }

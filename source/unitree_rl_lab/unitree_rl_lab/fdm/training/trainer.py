@@ -14,8 +14,9 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 
 from ..config import FDMModelCfg, TrainCfg
-from .losses import FDMLoss
-from .metrics import compute_metrics
+from ..utils.progress import ProgressLogger
+from .losses import FDMLoss, LossAccumulator
+from .metrics import MetricAccumulator
 
 
 def _move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
@@ -42,10 +43,13 @@ class FDMTrainer:
         )
         self.global_epoch = 0
 
-    def train_epoch(self, loader: DataLoader) -> dict[str, float]:
+    def train_epoch(self, loader: DataLoader, *, log_interval_s: float = 10.0) -> dict[str, float]:
         self.model.train()
         totals: dict[str, float] = defaultdict(float)
         batches = 0
+        progress = ProgressLogger(
+            f"train epoch={self.global_epoch + 1}", len(loader), unit="batches", interval_s=log_interval_s
+        )
         for batch in loader:
             batch = _move_batch(batch, self.device)
             prediction = self.model.forward_batch(batch)
@@ -57,28 +61,32 @@ class FDMTrainer:
             batches += 1
             for name, value in losses.items():
                 totals[name] += float(value.detach())
+            progress.update(batches, detail=lambda: f"loss={totals['loss'] / batches:.4f}")
         if batches == 0:
             raise ValueError("Training loader produced no batches.")
         self.scheduler.step()
         self.global_epoch += 1
+        progress.update(batches, detail=lambda: f"loss={totals['loss'] / batches:.4f}", force=True)
         return {name: value / batches for name, value in totals.items()}
 
     @torch.no_grad()
-    def evaluate(self, loader: DataLoader) -> dict[str, float]:
+    def evaluate(self, loader: DataLoader, *, log_interval_s: float = 10.0) -> dict[str, Any]:
         self.model.eval()
-        totals: dict[str, float] = defaultdict(float)
+        loss_totals = LossAccumulator(self.loss_fn)
+        metrics = MetricAccumulator(command_timestep=getattr(loader.dataset, "command_timestep", 0.5))
         batches = 0
+        progress = ProgressLogger("validate", len(loader), unit="batches", interval_s=log_interval_s)
         for batch in loader:
             batch = _move_batch(batch, self.device)
             prediction = self.model.forward_batch(batch)
-            for name, value in self.loss_fn(prediction, batch).items():
-                totals[name] += float(value)
-            for name, value in compute_metrics(prediction, batch).items():
-                totals[name] += value
+            loss_totals.update(prediction, batch)
+            metrics.update(prediction, batch)
             batches += 1
+            progress.update(batches)
         if batches == 0:
             raise ValueError("Validation loader produced no batches.")
-        return {name: value / batches for name, value in totals.items()}
+        progress.update(batches, force=True)
+        return {**loss_totals.result(), **metrics.result()}
 
     def save_checkpoint(
         self,

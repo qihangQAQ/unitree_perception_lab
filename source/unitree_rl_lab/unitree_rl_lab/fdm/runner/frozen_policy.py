@@ -50,5 +50,6 @@ class FrozenRecurrentPolicy:
             actions = actions.clamp(-float(self.clip_actions), float(self.clip_actions))
         return actions
 
+    @torch.inference_mode()
     def reset(self, dones: torch.Tensor | None = None) -> None:
         self.module.reset(dones)

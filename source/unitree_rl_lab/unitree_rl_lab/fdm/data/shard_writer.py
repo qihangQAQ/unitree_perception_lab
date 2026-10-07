@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,8 @@ class EpisodeShardWriter:
         self.max_frames_per_shard = max_frames_per_shard
         self._episodes: list[dict[str, torch.Tensor]] = []
         self._frames = 0
+        self.written_paths: list[Path] = []
+        self.write_seconds = 0.0
         self._manifest = self._load_or_create_manifest(metadata)
         self._next_shard = 1 + max(
             (-1, *(int(Path(item["path"]).stem.split("_")[-1]) for item in self._manifest["shards"]))
@@ -90,6 +93,7 @@ class EpisodeShardWriter:
     def flush(self) -> Path | None:
         if not self._episodes:
             return None
+        started = time.monotonic()
         name = f"shard_{self._next_shard:05d}.pt"
         destination = self.split_dir / name
         temporary = self.split_dir / f".{name}.{uuid.uuid4().hex}.tmp"
@@ -104,9 +108,15 @@ class EpisodeShardWriter:
         }
         self._manifest["shards"].append(entry)
         _atomic_json_dump(self.manifest_path, self._manifest)
+        print(
+            f"[FDM] Saved {destination}: episodes={entry['episodes']} frames={entry['frames']}",
+            flush=True,
+        )
         self._next_shard += 1
+        self.written_paths.append(destination)
         self._episodes = []
         self._frames = 0
+        self.write_seconds += time.monotonic() - started
         return destination
 
     def close(self) -> None:

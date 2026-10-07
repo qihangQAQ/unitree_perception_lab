@@ -33,7 +33,7 @@ def main() -> None:
     dataset = FDMWindowDataset(args.dataset, args.split, horizon=model_cfg.horizon)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers)
     for name, value in sorted(trainer.evaluate(loader).items()):
-        print(f"{name}: {value:.6f}")
+        print(f"{name}: {value:.6f}" if value is not None else f"{name}: unavailable")
 
 
 if __name__ == "__main__":
