@@ -26,6 +26,7 @@ class FixedRolloutCollector(FDMRolloutCollector):
 
     collection_mode = "fixed"
     FULL = 4
+    extra_frame_spec = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -41,19 +42,35 @@ class FixedRolloutCollector(FDMRolloutCollector):
     def pending_episodes(self) -> int:
         return int(self.buffer.open.sum()) if self.buffer is not None else 0
 
-    def _record_batch(self, ids, groups, timestamp, *, collision=False, timeout=None):
-        if not len(ids):
-            return
-        if torch.any(self.history_count[ids] < self.cfg.history_length):
-            raise RuntimeError("FDM frame history is not full.")
+    def _frame_maps_batch(self, ids):
         self.height_sensor.reset(ids)
-        height, invalid = door_aware_height_map(
+        return door_aware_height_map(
             self.height_sensor, ids, shape=(self.cfg.map_height, self.cfg.map_width),
             clip=(self.cfg.map_clip_min, self.cfg.map_clip_max),
             invalid_sentinel=self.cfg.invalid_height_sentinel,
             door_probe_height=self.cfg.map_door_probe_height,
             door_height_threshold=self.cfg.map_door_height_threshold,
         )
+
+    def _prepare_boundary(self, ids, timestamp):
+        """Optional decision snapshot hook; no simulator step occurs before recording."""
+
+    def _extra_frame_fields(self, ids):
+        return {}
+
+    def _step_exclusions(self, done):
+        return torch.zeros_like(done)
+
+    def _after_step(self):
+        """Optional collection-stop hook, used by paired navigation evaluation."""
+        return None
+
+    def _record_batch(self, ids, groups, timestamp, *, collision=False, timeout=None):
+        if not len(ids):
+            return
+        if torch.any(self.history_count[ids] < self.cfg.history_length):
+            raise RuntimeError("FDM frame history is not full.")
+        height, invalid = self._frame_maps_batch(ids)
         timeout = torch.zeros(len(ids), dtype=torch.bool, device=self.device) if timeout is None else timeout
         collisions = torch.full_like(timeout, collision)
         reason = torch.where(timeout, int(TerminationReason.TIMEOUT), int(TerminationReason.NONE))
@@ -72,6 +89,7 @@ class FixedRolloutCollector(FDMRolloutCollector):
             truncated=timeout, termination_reason=reason,
             episode_id=self.episode_ids[ids], usd_origin_id=origin,
             usd_region_split=importer.origin_split_ids[origin],
+            **self._extra_frame_fields(ids),
         )
         self.last_frame_timestamp[ids] = timestamp
         self.frame_counts[ids] += 1
@@ -132,7 +150,7 @@ class FixedRolloutCollector(FDMRolloutCollector):
             )
         print(f"[FDM] Fixed collection: envs={self.num_envs} frames_per_env={frames_per_env} "
               f"target_frames={budget.target} buffer={needed / 2**30:.3f}GiB min_fill={min_fill}.", flush=True)
-        self.buffer = FixedFrameBuffer(self.num_envs, frames_per_env)
+        self.buffer = FixedFrameBuffer(self.num_envs, frames_per_env, extra_spec=self.extra_frame_spec)
         self.frame_counts.zero_()
         self.stop_reason = None
         tracker = CollectionTracker(self, budget.target, log_interval_s, log, round_index)
@@ -184,7 +202,8 @@ class FixedRolloutCollector(FDMRolloutCollector):
             command_before, write_before = self._command_seconds, self.writer.write_seconds
             done = terminated | truncated
             collision, groups = self._collision_and_groups()
-            active = (self.phase == int(_Phase.ACTIVE)) & ~done
+            excluded = self._step_exclusions(done)
+            active = (self.phase == int(_Phase.ACTIVE)) & ~done & ~excluded
             self._episode_force_peaks = torch.maximum(
                 self._episode_force_peaks, torch.where(active[:, None], self._step_force_peaks, 0.0)
             )
@@ -202,7 +221,7 @@ class FixedRolloutCollector(FDMRolloutCollector):
             warmup_collision = (self.phase == int(_Phase.WARMUP)) & collision & ~done
             tracker.counters[1] += warmup_collision.sum()
             self.phase[warmup_collision] = int(_Phase.WAITING_FOR_RESET)
-            moving = ((self.phase == int(_Phase.WARMUP)) | (self.phase == int(_Phase.ACTIVE))) & ~collision & ~done
+            moving = ((self.phase == int(_Phase.WARMUP)) | (self.phase == int(_Phase.ACTIVE))) & ~collision & ~done & ~excluded
             self.steps_remaining[moving] -= 1
             boundaries = moving & (self.steps_remaining == 0)
             born = boundaries & (self.phase == int(_Phase.WARMUP))
@@ -211,6 +230,8 @@ class FixedRolloutCollector(FDMRolloutCollector):
             timeout = continuing & (self.active_commands >= self.cfg.max_episode_commands)
             born_ids = torch.nonzero(born).flatten()
             planned_ids = torch.nonzero(born | (continuing & ~timeout)).flatten()
+            boundary_ids = torch.nonzero(boundaries).flatten()
+            self._prepare_boundary(boundary_ids, timestamp)
             self._plan("advance", planned_ids)
             self.buffer.begin(born_ids)
             self.episode_ids[born_ids] = torch.arange(
@@ -221,7 +242,6 @@ class FixedRolloutCollector(FDMRolloutCollector):
             self.last_frame_timestamp[born_ids] = timestamp
             self.active_commands[born_ids] = 0
             self.phase[born_ids] = int(_Phase.ACTIVE)
-            boundary_ids = torch.nonzero(boundaries).flatten()
             self._record_batch(boundary_ids, groups, timestamp, timeout=timeout[boundary_ids])
             self.steps_remaining[planned_ids] = self.cfg.policy_steps_per_command
             self._set_commands(planned_ids, self.planner.command[planned_ids])
@@ -235,7 +255,7 @@ class FixedRolloutCollector(FDMRolloutCollector):
             self.phase[full_ids] = self.FULL
             self._set_commands(full_ids, torch.zeros(len(full_ids), 3, device=self.device))
 
-            settling = (self.phase == int(_Phase.SETTLING)) & ~done
+            settling = (self.phase == int(_Phase.SETTLING)) & ~done & ~excluded
             self.settle_steps[settling] += 1
             forces = torch.linalg.vector_norm(self.contact_sensor.data.net_forces_w, dim=-1)
             both_feet = torch.all(forces[:, self.foot_body_ids] > self.cfg.collision_force_threshold, dim=-1)
@@ -251,7 +271,7 @@ class FixedRolloutCollector(FDMRolloutCollector):
             tracker.data_seconds += max(0.0, time.monotonic() - after_sim
                                         - (self._command_seconds - command_before)
                                         - (self.writer.write_seconds - write_before))
-            self.stop_reason = budget.stop_reason(tracker.frames, time.monotonic() - tracker.start)
+            self.stop_reason = self._after_step() or budget.stop_reason(tracker.frames, time.monotonic() - tracker.start)
             tracker.update()
             if self.stop_reason is not None:
                 return

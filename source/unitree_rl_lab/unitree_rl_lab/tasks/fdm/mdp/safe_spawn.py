@@ -36,6 +36,8 @@ class TerrainAnalysisSpawnCfg:
     wall_clearance_rays: int = 20
     raycast_batch_size: int = 250_000
     seed: int = 42
+    retain_navigation_grid: bool = False
+    navigation_clearance: float = 0.4
 
     def __post_init__(self) -> None:
         if self.sample_points < 1:
@@ -147,6 +149,20 @@ class TerrainAnalysisRootReset:
         radius = math.ceil(self.robot_dim / resolution)
         padded = F.pad(height_grid[None, None], (radius, radius, radius, radius), value=-torch.inf)
         local_max = F.max_pool2d(padded, kernel_size=2 * radius + 1, stride=1)[0, 0]
+        if self.cfg.retain_navigation_grid:
+            # Reuse terrain rays only for stage two. An eroded free grid plus
+            # connected components supports local goals without crossing walls.
+            stride = max(1, round(0.2 / resolution))
+            nav_radius = math.ceil(self.cfg.navigation_clearance / resolution)
+            nav_padded = F.pad(height_grid[None, None], (nav_radius,) * 4, value=torch.inf)
+            nav_max = F.max_pool2d(nav_padded, kernel_size=2 * nav_radius + 1, stride=1)[0, 0]
+            walkable = (torch.isfinite(height_grid) & torch.isfinite(nav_max)
+                        & (height_grid < self.cfg.wall_height) & (nav_max - height_grid < 0.2))
+            self.terrain.fdm_navigation_grid = {
+                "origin": torch.stack((grid_x[0], grid_y[0])),
+                "resolution": stride * resolution,
+                "walkable": walkable[::stride, ::stride].contiguous(),
+            }
         return grid_x, grid_y, local_max
 
     def _sample_cell_candidates(self, xy_jitter: float, draw_count: int) -> tuple[torch.Tensor, torch.Tensor]:

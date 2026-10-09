@@ -55,7 +55,7 @@ class DatasetStatistics:
         self.pixels += episode.height_map_invalid.numel()
         for field in fields(episode):
             value = getattr(episode, field.name)
-            if value.is_floating_point():
+            if value is not None and value.is_floating_point():
                 self.nonfinite[field.name] += int((~torch.isfinite(value)).sum())
         self.moments["episode_frames"].update(torch.tensor([episode.num_frames]))
         self.moments["episode_duration_s"].update((episode.timestamp[-1] - episode.timestamp[0]).reshape(1))

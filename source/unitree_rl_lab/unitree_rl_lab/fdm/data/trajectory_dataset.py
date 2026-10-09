@@ -28,6 +28,7 @@ class WindowIndex:
     start: int
     collision: bool
     low_motion: bool
+    command_source: int = 0
 
 
 def _episode_samples(
@@ -68,6 +69,7 @@ class FDMWindowDataset(Dataset[dict[str, torch.Tensor]]):
         allow_empty: bool = False,
     ) -> None:
         self.root, manifest = read_manifest(root_or_manifest)
+        self.schema_version = manifest["schema_version"]
         allowed = None if shard_paths is None else {str(Path(path).resolve()) for path in shard_paths}
         self.shards = [
             self.root / item["path"]
@@ -107,7 +109,11 @@ class FDMWindowDataset(Dataset[dict[str, torch.Tensor]]):
         if cached is None:
             self.shard_load_count += 1
             payload = torch.load(self.shards[shard_index], map_location="cpu", weights_only=False)
+            if payload["schema_version"] != self.schema_version:
+                raise ValueError("Shard and manifest schema versions disagree.")
             episodes = [EpisodeData.from_dict(data) for data in payload["episodes"]]
+            if any((episode.command_source is not None) != (self.schema_version == 4) for episode in episodes):
+                raise ValueError("Shard provenance does not match its command semantics.")
         else:
             episodes = cached
         self._cache[shard_index] = episodes
@@ -135,7 +141,8 @@ class FDMWindowDataset(Dataset[dict[str, torch.Tensor]]):
                 valid &= collision | ((full | self.include_incomplete_noncollision) & ~(full & has_terminal))
                 low_motion = torch.linalg.vector_norm(current_xy[end] - current_xy, dim=-1) < self.low_motion_threshold
                 selected = starts[valid].tolist()
-                output.extend(WindowIndex(shard_index, episode_index, start, coll, low)
+                source = 0 if episode.command_source is None else int(episode.command_source[0])
+                output.extend(WindowIndex(shard_index, episode_index, start, coll, low, source)
                               for start, coll, low in zip(selected, collision[valid].tolist(), low_motion[valid].tolist()))
                 if self._statistics_accumulator is not None:
                     self._statistics_accumulator.update_episode(episode, output[first_index:])

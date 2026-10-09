@@ -8,13 +8,15 @@ from ..utils.se2 import integrate_body_twists, wrap_angle
 
 
 class MetricAccumulator:
-    def __init__(self, threshold: float = 0.5, command_timestep: float = 0.5) -> None:
+    def __init__(self, threshold: float = 0.5, command_timestep: float = 0.5, detailed: bool = False) -> None:
         self.threshold = threshold
         self.command_timestep = command_timestep
         self.count = self.final_count = self.tp = self.fp = self.fn = self.correct = 0
         self.position = self.heading = self.final_position = self.model_squared = 0.0
         self.baseline_position = self.baseline_heading = self.baseline_final = self.baseline_squared = 0.0
         self.baseline_count = self.baseline_final_count = 0
+        self.detailed = detailed
+        self._details = []
 
     @torch.no_grad()
     def update(self, prediction: dict[str, torch.Tensor], target: dict[str, torch.Tensor]) -> None:
@@ -36,6 +38,9 @@ class MetricAccumulator:
         self.fp += int((predicted & ~label & valid).sum())
         self.fn += int((~predicted & label & valid).sum())
         self.correct += int(((predicted == label) & valid).sum())
+        if self.detailed:
+            self._details.append((error.float().cpu(), valid.cpu(),
+                                  prediction["collision_logits"].sigmoid().cpu(), label.cpu()))
         if "future_commands" in target:
             baseline = integrate_body_twists(target["future_commands"].double(), self.command_timestep)
             baseline_error = torch.linalg.vector_norm(baseline[..., :2] - target_pose[..., :2], dim=-1)
@@ -68,6 +73,36 @@ class MetricAccumulator:
                 "position_mse_ratio_vs_baseline": self.model_squared / self.baseline_squared
                 if self.baseline_squared > 0 else None,
             })
+        if self.detailed and self._details:
+            error, valid, probability, label = (torch.cat([row[i] for row in self._details]) for i in range(4))
+            def pr(mask, predictions):
+                tp = int((predictions & label & mask).sum())
+                fp = int((predictions & ~label & mask).sum())
+                fn = int((~predictions & label & mask).sum())
+                return {"precision": tp / max(1, tp + fp), "recall": tp / max(1, tp + fn),
+                        "tp": tp, "fp": fp, "fn": fn}
+            result["collision_threshold_curve"] = [
+                {"threshold": value / 20, **pr(valid, probability >= value / 20)} for value in range(1, 20)
+            ]
+            result["position_p95_m"] = float(torch.quantile(error[valid], .95)) if valid.any() else None
+            by_horizon = []
+            first_collision = label.long().argmax(dim=1)
+            has_collision = (label & valid).any(dim=1)
+            for step in range(error.shape[1]):
+                errors = error[:, step][valid[:, step]]
+                mask = torch.zeros_like(valid)
+                mask[:, step] = valid[:, step]
+                events = has_collision & (first_collision == step)
+                by_horizon.append({
+                    "step": step + 1, "nominal_time_s": (step + 1) * self.command_timestep,
+                    "position_mae_m": float(errors.mean()) if len(errors) else None,
+                    "position_p95_m": float(torch.quantile(errors, .95)) if len(errors) else None,
+                    "collision": pr(mask, probability >= self.threshold),
+                    "first_event_windows": int(events.sum()),
+                    "recall_for_first_event_at_this_step": float((probability[events, step] >= self.threshold).float().mean())
+                    if events.any() else None,
+                })
+            result["by_horizon"] = by_horizon
         return result
 
 

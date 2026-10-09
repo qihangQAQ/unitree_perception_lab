@@ -40,13 +40,13 @@ class FixedFrameBuffer:
     full backing storage. The buffer can be reset/reused or released for training.
     """
 
-    def __init__(self, num_envs: int, capacity: int):
+    def __init__(self, num_envs: int, capacity: int, *, extra_spec=None):
         if num_envs < 1 or capacity < 1:
             raise ValueError("Buffer dimensions must be positive.")
         self.num_envs, self.capacity = num_envs, capacity
         self.storage = {
             name: torch.empty((num_envs, capacity, *shape), dtype=dtype, device="cpu")
-            for name, (shape, dtype) in frame_spec().items()
+            for name, (shape, dtype) in {**frame_spec(), **(extra_spec or {})}.items()
         }
         self.fill = torch.zeros(num_envs, dtype=torch.long, device="cpu")
         self.starts = torch.zeros_like(self.fill)

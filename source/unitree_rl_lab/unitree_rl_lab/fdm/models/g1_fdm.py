@@ -102,19 +102,31 @@ class G1HeightFDM(nn.Module):
         height_map: torch.Tensor,
         future_commands: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
+        context = self.encode_context(relative_state_history, proprio_history, height_map)
+        return self.predict_from_context(context, future_commands)
+
+    def encode_context(self, relative_state_history, proprio_history, height_map) -> torch.Tensor:
+        """Encode observations once per decision, shared by all MPPI candidates.
+
+        This split adds no parameters and preserves stage-one state_dict keys.
+        Use eval() for planning: the recurrent encoders contain dropout.
+        """
         expected_history = (self.cfg.history_length, self.cfg.state_dim)
         if tuple(relative_state_history.shape[-2:]) != expected_history:
             raise ValueError(f"Expected state history [..., {expected_history}], got {relative_state_history.shape}.")
         if tuple(proprio_history.shape[-2:]) != (self.cfg.history_length, self.cfg.proprio_dim):
             raise ValueError("Unexpected proprioception history shape.")
-        if tuple(future_commands.shape[-2:]) != (self.cfg.horizon, self.cfg.command_dim):
-            raise ValueError("Unexpected command plan shape.")
-
         state_input = torch.cat((relative_state_history, proprio_history), dim=-1)
         _, state_hidden = self.state_encoder(state_input)
         state_latent = state_hidden[-1]
         height_latent = self.height_encoder(height_map)
-        context = torch.cat((state_latent, height_latent), dim=-1)
+        return torch.cat((state_latent, height_latent), dim=-1)
+
+    def predict_from_context(self, context: torch.Tensor, future_commands: torch.Tensor) -> dict[str, torch.Tensor]:
+        if tuple(future_commands.shape[1:]) != (self.cfg.horizon, self.cfg.command_dim):
+            raise ValueError("Unexpected command plan shape.")
+        if context.shape != (len(future_commands), self.cfg.state_hidden_dim + self.cfg.height_latent_dim):
+            raise ValueError("Context and command batch sizes must agree.")
         command_latent = self.command_encoder(future_commands)
         recurrent_input = torch.cat(
             (command_latent, context.unsqueeze(1).expand(-1, self.cfg.horizon, -1)), dim=-1

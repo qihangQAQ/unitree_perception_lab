@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import MISSING, dataclass, fields
 from enum import IntEnum
 from typing import Any
 
 import torch
 
 SCHEMA_VERSION = 3
+STAGE2_SCHEMA_VERSION = 4
+SUPPORTED_SCHEMA_VERSIONS = (SCHEMA_VERSION, STAGE2_SCHEMA_VERSION)
 
 
 class Split(IntEnum):
@@ -28,6 +30,8 @@ class TerminationReason(IntEnum):
     WATCHDOG = 3
     INITIALIZATION = 4
     ROUND_CUT = 5
+    SPLIT_EXIT = 6
+    GOAL_UNAVAILABLE = 7
 
 
 @dataclass
@@ -57,6 +61,10 @@ class EpisodeData:
     episode_id: torch.Tensor
     usd_origin_id: torch.Tensor
     usd_region_split: torch.Tensor
+    # Present together in v4. Their presence selects executed-command targets.
+    command_source: torch.Tensor | None = None  # 0=random, 1=MPPI
+    goal_xy_w: torch.Tensor | None = None
+    planner_model_version: torch.Tensor | None = None
 
     @property
     def num_frames(self) -> int:
@@ -112,17 +120,36 @@ class EpisodeData:
         event_frames = self.collision_now | self.terminated | self.truncated
         if torch.any(self.has_outgoing_command & event_frames):
             raise ValueError("Terminal/event frames cannot own an outgoing command.")
+        provenance = (self.command_source, self.goal_xy_w, self.planner_model_version)
+        if any(value is not None for value in provenance):
+            if any(value is None for value in provenance):
+                raise ValueError("Stage-two provenance fields must all be present.")
+            for name, shape, dtype in (("command_source", (), torch.int8), ("goal_xy_w", (2,), torch.float32),
+                                       ("planner_model_version", (), torch.int32)):
+                value = getattr(self, name)
+                if value.shape != (self.num_frames, *shape) or value.dtype != dtype:
+                    raise ValueError(f"Invalid stage-two field {name}.")
+            if torch.any((self.command_source < 0) | (self.command_source > 1)):
+                raise ValueError("Unknown command source.")
+            if torch.unique(self.command_source).numel() != 1 or torch.unique(self.planner_model_version).numel() != 1:
+                raise ValueError("Source and planner snapshot cannot change within an episode fragment.")
+            if not torch.isfinite(self.goal_xy_w).all():
+                raise ValueError("Goals must be finite (random frames use the current position).")
+            outgoing = self.has_outgoing_command
+            if not torch.allclose(self.command[outgoing], self.command_plan[outgoing, 0]):
+                raise ValueError("Stored command must match the executed first element of the final plan.")
 
     def to_dict(self) -> dict[str, torch.Tensor]:
         self.validate()
-        return {field.name: getattr(self, field.name).detach().cpu().contiguous() for field in fields(self)}
+        return {field.name: getattr(self, field.name).detach().cpu().contiguous() for field in fields(self)
+                if getattr(self, field.name) is not None}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], *, validate: bool = True) -> "EpisodeData":
-        missing = {field.name for field in fields(cls)} - data.keys()
+        missing = {field.name for field in fields(cls) if field.default is MISSING} - data.keys()
         if missing:
             raise ValueError(f"Episode is missing schema fields: {sorted(missing)}")
-        episode = cls(**{field.name: data[field.name] for field in fields(cls)})
+        episode = cls(**{field.name: data[field.name] for field in fields(cls) if field.name in data})
         if validate:
             episode.validate()
         return episode
@@ -135,7 +162,7 @@ class EpisodeBuilder:
         self._frames: list[dict[str, torch.Tensor]] = []
 
     def append(self, **frame: torch.Tensor) -> None:
-        expected = {field.name for field in fields(EpisodeData)}
+        expected = {field.name for field in fields(EpisodeData) if field.default is MISSING}
         if set(frame) != expected:
             raise ValueError(
                 f"Frame keys differ from schema: missing={expected - set(frame)}, extra={set(frame) - expected}."

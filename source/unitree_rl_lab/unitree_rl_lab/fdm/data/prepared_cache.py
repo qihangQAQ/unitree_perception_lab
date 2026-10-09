@@ -14,13 +14,14 @@ import numpy as np
 import torch
 
 
-CACHE_VERSION = 1  # Bump whenever sample transforms/semantics change.
+CACHE_VERSION = 2  # v4: executed prefix + pre-collision proposal tail.
 
 
 def cache_path(dataset) -> Path:
     source = [(str(path.resolve()), path.stat().st_size, path.stat().st_mtime_ns) for path in dataset.shards]
     digest = hashlib.sha256(json.dumps({
         "version": CACHE_VERSION, "source": source, "horizon": dataset.horizon,
+        "schema_version": dataset.schema_version,
         "command_timestep": dataset.command_timestep, "height_dtype": str(dataset._height_dtype),
     }, sort_keys=True).encode())
     for item in dataset.indices:

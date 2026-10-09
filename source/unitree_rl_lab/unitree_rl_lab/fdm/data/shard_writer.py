@@ -12,7 +12,7 @@ from typing import Any, Iterator
 
 import torch
 
-from .schema import SCHEMA_VERSION, EpisodeData, Split
+from .schema import SCHEMA_VERSION, STAGE2_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS, EpisodeData, Split
 
 
 def _atomic_json_dump(path: Path, value: dict[str, Any]) -> None:
@@ -34,9 +34,13 @@ class EpisodeShardWriter:
         metadata: dict[str, Any],
         *,
         max_frames_per_shard: int = 20_000,
+        schema_version: int = SCHEMA_VERSION,
     ) -> None:
         if split not in ("train", "val", "test"):
             raise ValueError(f"Invalid split {split!r}.")
+        if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
+            raise ValueError(f"Unsupported schema version {schema_version}.")
+        self.schema_version = schema_version
         self.root = Path(root)
         self.split = split
         self.split_dir = self.root / split
@@ -60,13 +64,13 @@ class EpisodeShardWriter:
         if self.manifest_path.exists():
             with self.manifest_path.open(encoding="utf-8") as stream:
                 manifest = json.load(stream)
-            if manifest.get("schema_version") != SCHEMA_VERSION:
+            if manifest.get("schema_version") != self.schema_version:
                 raise ValueError("Cannot append to a dataset with a different schema version.")
             if manifest.get("metadata") != metadata:
                 raise ValueError("Cannot append shards whose dataset metadata differs from the manifest.")
             return manifest
         manifest = {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": self.schema_version,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "metadata": metadata,
             "shards": [],
@@ -80,6 +84,8 @@ class EpisodeShardWriter:
 
     def append(self, episode: EpisodeData) -> None:
         episode.validate()
+        if (episode.command_source is not None) != (self.schema_version == STAGE2_SCHEMA_VERSION):
+            raise ValueError("Episode command semantics do not match the dataset schema.")
         expected_split = int(Split.from_name(self.split))
         if int(episode.usd_region_split[0]) != expected_split:
             raise ValueError(
@@ -97,7 +103,7 @@ class EpisodeShardWriter:
         name = f"shard_{self._next_shard:05d}.pt"
         destination = self.split_dir / name
         temporary = self.split_dir / f".{name}.{uuid.uuid4().hex}.tmp"
-        payload = {"schema_version": SCHEMA_VERSION, "split": self.split, "episodes": self._episodes}
+        payload = {"schema_version": self.schema_version, "split": self.split, "episodes": self._episodes}
         torch.save(payload, temporary)
         os.replace(temporary, destination)
         entry = {
@@ -134,8 +140,8 @@ def read_manifest(root_or_manifest: str | Path) -> tuple[Path, dict[str, Any]]:
     manifest_path = path if path.name == "manifest.json" else path / "manifest.json"
     with manifest_path.open(encoding="utf-8") as stream:
         manifest = json.load(stream)
-    if manifest.get("schema_version") != SCHEMA_VERSION:
-        raise ValueError(f"Unsupported schema version {manifest.get('schema_version')}; expected {SCHEMA_VERSION}.")
+    if manifest.get("schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
+        raise ValueError(f"Unsupported schema version {manifest.get('schema_version')}.")
     return manifest_path.parent, manifest
 
 

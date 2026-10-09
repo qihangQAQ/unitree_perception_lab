@@ -2,6 +2,9 @@
 
 这一目录对应“不带 MPPI”的第一阶段：冻结已有的 G1 高程图 locomotion policy，在线 rollout，按 episode 分片保存数据，并交替训练单个 height-map FDM。
 
+二阶段的 MPPI 混合 rollout 已有独立入口 `scripts/fdm/train_fdm_stage2.py`，
+4090 启动命令、数据语义及闭环评估见 [二阶段说明](STAGE2.md)。下面保留一阶段的使用说明。
+
 新数据集默认使用每环境固定容量采集：每轮重新 reset 环境和策略 hidden state，最多记录
 `num_envs × frames_per_env` 个真实帧（默认每环境 150 帧，可包含多条 episode）。达到容量后进入训练；
 平均填充率达到 95% 且最后 10% 进度节点后的等待超过此前平均进度间隔的 1.5 倍时，也会结束采集。
@@ -80,11 +83,10 @@ python scripts/fdm/evaluate_fdm.py \
 可选的 `--resume-round-summary` 仅用于当前固定容量机制下一轮已完成采集的数据，不支持旧报告。
 仿真状态没有保存，因此恢复 rollout 不保证逐位复现。
 
-未来接入 MPPI 的二阶段可以使用 checkpoint 中的 `model_cfg` 构建 FDM，加载
-`model_state_dict` 作为初始化权重，并设置新的二阶段数据与训练计划。
-这条模型加载路径不依赖一阶段 dataset 或一阶段 scheduler 是否已经结束；
-优化器状态也仍保存在文件中，二阶段实现时可按训练方案选择是否恢复。
-当前入口的 `--resume` 用于同一阶段的精确训练状态恢复，MPPI 采集与二阶段入口后续再实现。
+二阶段入口通过 `--fdm-checkpoint` 读取 `model_cfg` 和 `model_state_dict`，
+以新的优化器、学习率和训练计划开始 MPPI 混合采集训练，不依赖一阶段 dataset 或 scheduler。
+`train_fdm.py --resume` 仍用于当前一阶段格式；`train_fdm_stage2.py --resume`
+只恢复二阶段自身的完整轮 checkpoint。没有加入对旧 episode 采集机制 checkpoint 的续训适配。
 
 ## 小显卡调试与进度
 

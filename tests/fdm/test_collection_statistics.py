@@ -336,7 +336,9 @@ def test_one_frame_episode_and_incomplete_future(tmp_path):
     assert torch.equal(tail["future_pose"][1:, :2], torch.zeros(9, 2))
     from dataclasses import fields
     for field in fields(episode):
-        setattr(episode, field.name, getattr(episode, field.name)[-1:].clone())
+        value = getattr(episode, field.name)
+        if value is not None:
+            setattr(episode, field.name, value[-1:].clone())
     dataset = _dataset(tmp_path / "one", [episode])
     assert dataset.statistics["statistics"]["velocity"]["mean"] == [None, None, None]
     assert dataset.statistics["statistics"]["episode_duration_s"]["mean"] == 0

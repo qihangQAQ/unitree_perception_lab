@@ -114,10 +114,10 @@ class FDMTrainer:
         return {name: value / batches for name, value in totals.items()}
 
     @torch.no_grad()
-    def evaluate(self, loader: DataLoader, *, log_interval_s: float = 10.0) -> dict[str, Any]:
+    def evaluate(self, loader: DataLoader, *, log_interval_s: float = 10.0, detailed: bool = False) -> dict[str, Any]:
         self.model.eval()
         loss_totals = LossAccumulator(self.loss_fn)
-        metrics = MetricAccumulator(command_timestep=getattr(loader.dataset, "command_timestep", 0.5))
+        metrics = MetricAccumulator(command_timestep=getattr(loader.dataset, "command_timestep", 0.5), detailed=detailed)
         batches = 0
         progress = ProgressLogger("validate", len(loader), unit="batches", interval_s=log_interval_s)
         for batch in loader:
@@ -158,6 +158,7 @@ class FDMTrainer:
         model_cfg: FDMModelCfg,
         metrics: dict[str, Any],
         dataset_manifest: str,
+        stage2_state: dict | None = None,
     ) -> Path:
         destination = Path(path)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -176,6 +177,7 @@ class FDMTrainer:
                 "dataset_manifest": dataset_manifest,
                 "torch_rng_state": torch.get_rng_state(),
                 "cuda_rng_states": torch.cuda.get_rng_state_all() if torch.cuda.is_initialized() else None,
+                **({"stage2": stage2_state} if stage2_state is not None else {}),
             },
             temporary,
         )

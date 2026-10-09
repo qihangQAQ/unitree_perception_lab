@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("entrypoint", ["train_fdm.py", "benchmark_fdm.py"])
+@pytest.mark.parametrize("entrypoint", ["train_fdm.py", "train_fdm_stage2.py", "evaluate_mppi.py", "benchmark_fdm.py"])
 def test_spawn_import_does_not_launch_simulator_or_parse_arguments(entrypoint):
     script = Path(__file__).resolve().parents[2] / "scripts" / "fdm" / entrypoint
     result = subprocess.run(

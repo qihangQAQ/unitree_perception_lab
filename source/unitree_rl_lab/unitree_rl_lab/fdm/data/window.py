@@ -25,8 +25,20 @@ def window_targets(episode: EpisodeData, starts: torch.Tensor, horizon: int) -> 
     current = episode.state_history_raw[starts, 0]
     future = episode.state_history_raw[indices, 0]
     poses = torch.cat((current[:, None], future), dim=1)
+    commands = episode.command_plan[starts].float()
+    if episode.command_source is not None:
+        # MPPI can replace the whole plan at every boundary. Only commands that
+        # actually ran supervise the observed prefix, including the collision step.
+        steps = torch.arange(horizon, device=starts.device)[None]
+        command_indices = (starts[:, None] + steps).clamp_max(episode.num_frames - 1)
+        commands = episode.command[command_indices].float()
+        last_decision = (starts + first_collision).clamp_max(episode.num_frames - 1)
+        tail_steps = (steps - first_collision[:, None]).clamp(0, horizon - 1)
+        counterfactual_tail = episode.command_plan[last_decision[:, None], tail_steps]
+        tail = has_collision[:, None] & (steps > first_collision[:, None])
+        commands = torch.where(tail[..., None], counterfactual_tail, commands)
     return {
-        "future_commands": episode.command_plan[starts].float(),
+        "future_commands": commands,
         "future_pose": relative_pose_sequence(poses[..., :3], poses[..., 3:7], anchor=0)[:, 1:].float(),
         "future_collision": after_collision.float(),
         "valid_mask": exists | after_collision,
