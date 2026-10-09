@@ -3,9 +3,76 @@
 from __future__ import annotations
 
 import hashlib
+import argparse
+import math
 import subprocess
 from pathlib import Path
 from typing import Any
+
+
+def _positive_gib(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError("Cache budget must be finite and positive (GiB).")
+    return number
+
+
+def add_dataset_cache_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--dataset-cache", choices=("memory", "mmap", "shard", "auto"), default="auto",
+        help="Precompute RAM/mmap samples; auto chooses mmap on low RAM. shard is the legacy slow reader.",
+    )
+    parser.add_argument(
+        "--dataset-cache-gb", type=_positive_gib,
+        help="RAM sample cache budget for validation + train (GiB); excludes mmap pages, simulator and scratch RAM.",
+    )
+
+
+def prepare_dataset_cache(dataset, args, *, resident_cache_bytes: int = 0) -> None:
+    dataset.prepare_cache(
+        args.dataset_cache,
+        max_cache_bytes=None if args.dataset_cache_gb is None else int(args.dataset_cache_gb * 2**30),
+        resident_cache_bytes=resident_cache_bytes,
+        log_interval_s=getattr(args, "log_interval", 10.0),
+    )
+
+
+def add_collection_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--frames-per-env", type=int, help="Per-env frame capacity for each new train round (default 150).")
+    parser.add_argument("--validation-frames-per-env", type=int, help="Fixed validation capacity per env (default 150).")
+    parser.add_argument("--collection-min-fill", type=float, help="Allow slow-tail stopping after this fill ratio (default .95).")
+    parser.add_argument("--collection-tail-factor", type=float, help="Tail time / mean progress interval (default 1.5).")
+    parser.add_argument("--collection-max-steps", type=int, help="Hard policy-step limit; 0 selects a bounded automatic limit.")
+
+
+def resolve_collection_settings(args, metadata=None) -> dict:
+    recorded = metadata.get("collection") if metadata is not None else None
+    if metadata is not None and (not recorded or recorded.get("mode") != "fixed" or recorded.get("version") != 1):
+        raise ValueError("This entrypoint requires the fixed-capacity dataset format. Use a new --dataset.")
+    defaults = {"frames_per_env": 150, "validation_frames_per_env": 150,
+                "collection_min_fill": 0.95, "collection_tail_factor": 1.5, "collection_max_steps": 0}
+    values = {}
+    for name, default in defaults.items():
+        value = getattr(args, name, None)
+        values[name] = value if value is not None else (recorded or {}).get(name, default)
+        setattr(args, name, values[name])
+    if min(values["frames_per_env"], values["validation_frames_per_env"]) < 12:
+        raise ValueError("Frame capacities must be at least horizon + 2 (12).")
+    if not 0 < values["collection_min_fill"] <= 1 or not math.isfinite(values["collection_tail_factor"]) \
+            or values["collection_tail_factor"] <= 0 or values["collection_max_steps"] < 0:
+        raise ValueError("Invalid collection fill, tail factor or step limit.")
+    result = {"mode": "fixed", "version": 1, **values}
+    if recorded is not None and result != recorded:
+        raise ValueError("Fixed collection settings differ from the existing dataset; use a new --dataset.")
+    return result
+
+
+def collect_fixed(collector, args, *, split: str, seed: int, log, round_index=None):
+    return collector.collect(
+        args.validation_frames_per_env if split == "val" else args.frames_per_env,
+        seed=seed, min_fill=args.collection_min_fill, tail_factor=args.collection_tail_factor,
+        max_steps=args.collection_max_steps, log_interval_s=args.log_interval, log=log, round_index=round_index,
+    )
 
 
 def sha256_file(path: str | Path) -> str:

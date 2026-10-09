@@ -1,0 +1,9 @@
+# CLI reference for new fixed-capacity runs; scripts do not read this file automatically.
+frames_per_env: 150
+validation_frames_per_env: 150
+collection_min_fill: 0.95
+collection_tail_factor: 1.5
+collection_max_steps: 0  # Bounded automatic policy-step limit.
+samples_per_round: 80000  # 0 retains all-window weighted sampling.
+dataset_cache: auto  # RAM if it fits; otherwise precomputed mmap samples.
+dataset_cache_gb: 8  # Resident RAM samples only; not a process-wide memory cap.

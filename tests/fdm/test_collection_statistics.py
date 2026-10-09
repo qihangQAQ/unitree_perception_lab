@@ -248,6 +248,38 @@ class _ZeroModel(torch.nn.Module):
         return {"future_pose": pose, "collision_logits": torch.zeros_like(batch["future_collision"]) + self.offset}
 
 
+def test_training_reports_separate_fetch_and_optimization_times(tmp_path, monkeypatch, capsys):
+    dataset = _dataset(tmp_path / "data", [_episode(), _episode(None, 5)])
+    clock = [0.0]
+
+    class TimedDataset:
+        def __len__(self):
+            return len(dataset)
+
+        def __getitem__(self, index):
+            clock[0] += 5.0
+            return dataset[index]
+
+    class TimedModel(_ZeroModel):
+        def forward_batch(self, batch):
+            clock[0] += 2.0
+            return super().forward_batch(batch)
+
+    trainer = FDMTrainer(TimedModel(), TrainCfg(device="cpu"))
+    monkeypatch.setattr("unitree_rl_lab.fdm.training.trainer.time.monotonic", lambda: clock[0])
+    metrics = trainer.train_epoch(DataLoader(TimedDataset(), batch_size=2), log_interval_s=1000)
+    assert math.isfinite(metrics["loss"])
+    assert trainer.global_epoch == 1
+    assert trainer.last_epoch_timing == {
+        "data_seconds": 15.0, "step_seconds": 4.0, "mean_data_seconds": 7.5, "mean_step_seconds": 2.0,
+    }
+    output = capsys.readouterr().out
+    assert "device=cpu batch_size=2 workers=0" in output
+    assert "batches=1/2" in output  # First batch prints even before the log interval.
+    assert "last_s(data=10.000,step=2.000)" in output
+    assert "avg_s(data=7.500,step=2.000)" in output
+
+
 def test_trainer_evaluation_uses_global_metrics(tmp_path):
     dataset = _dataset(tmp_path / "data", [_episode(), _episode(None, 5)])
     trainer = FDMTrainer(_ZeroModel(), TrainCfg(device="cpu"))

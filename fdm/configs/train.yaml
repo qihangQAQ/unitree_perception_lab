@@ -1,6 +1,8 @@
 collection_rounds: 20
 epochs_per_round: 8
 batch_size: 128
+# Select this many windows before caching.
+samples_per_round: 80000
 learning_rate: 0.0003
 weight_decay: 0.00001
 gradient_clip_norm: 1.0

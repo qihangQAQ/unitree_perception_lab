@@ -30,7 +30,7 @@ def print_summary(report: dict) -> None:
     rows.update(data["endpoint_histograms"])
     if report.get("collection") is not None:
         for name in ("diagnostics", "timing_seconds", "contact_force_peak_n"):
-            rows[name] = report["collection"][name]
+            rows[name] = report["collection"].get(name)
     print(f"[FDM] Dataset summary split={report['split']} round={report['round']} reused={report['reused']}", flush=True)
     for name, value in rows.items():
         print(f"  {name:32s} {json.dumps(value, allow_nan=False)}", flush=True)
@@ -60,7 +60,7 @@ class CollectionLog:
             "shards": [str(path.resolve()) for path in dataset.shards],
             "dataset": dataset.statistics, "collection": collection,
             "sampler_targets": sampler_targets, "evaluation_before_training": evaluation,
-            "contact_force_peak_n": collection["contact_force_peak_n"] if collection else None,
+            "contact_force_peak_n": collection.get("contact_force_peak_n") if collection else None,
         }
         name = dataset.split if round_index is None else f"{dataset.split}_round_{round_index:03d}"
         path = self.directory / f"{name}_summary.json"
@@ -75,6 +75,13 @@ class CollectionLog:
         _atomic_json_dump(path, report)
         print(f"[FDM] Evaluation before training (epoch={global_epoch}): {json.dumps(metrics)}", flush=True)
 
+    def save_sample_pool(self, path: Path, dataset) -> None:
+        report = json.loads(path.read_text())
+        report["training_sample_pool"] = dataset.sample_pool_report
+        report["training_cache"] = {"mode": dataset.cache_mode, "resident_bytes": dataset.cached_bytes,
+                                    "sample_bytes": dataset.estimated_cache_bytes}
+        _atomic_json_dump(path, report)
+
 
 class CollectionTracker:
     """Cheap per-step counters; synchronize small diagnostic tensors only when logging."""
@@ -82,6 +89,7 @@ class CollectionTracker:
     def __init__(self, collector, target: int, interval_s: float, log: CollectionLog | None, round_index: int | None):
         self.collector = collector
         self.target = target
+        self.fixed = getattr(collector, "collection_mode", "episodes") == "fixed"
         self.interval_s = interval_s
         self.log = log
         self.round_index = round_index
@@ -106,8 +114,9 @@ class CollectionTracker:
         collector = self.collector
         elapsed = now - self.start
         completed = collector.completed_episodes - self.initial_completed
+        progress_count = self.frames if self.fixed else completed
         steps = collector.env.common_step_counter - self.initial_step
-        phases = torch.bincount(collector.phase.long(), minlength=4).cpu().tolist()
+        phases = torch.bincount(collector.phase.long(), minlength=5).cpu().tolist()
         counters = self.counters.cpu().tolist()
         timings = {
             "policy": self.policy_seconds, "simulation": self.sim_seconds,
@@ -117,13 +126,17 @@ class CollectionTracker:
         }
         record = {
             "event": "collection", "status": status, "error": error, "split": collector.cfg.split, "round": self.round_index,
-            "episodes": completed, "target_episodes": self.target, "completion_fraction": completed / self.target,
+            "collection_mode": "fixed" if self.fixed else "episodes",
+            "episodes": completed, "target_episodes": None if self.fixed else self.target,
+            "target_frames": self.target if self.fixed else None,
+            "completion_fraction": progress_count / self.target,
+            "stop_reason": getattr(collector, "stop_reason", None),
             "frames_recorded": self.frames, "shards_written": len(collector.writer.written_paths) - self.initial_shards,
             "steps": steps, "sim_seconds_per_env": steps * collector.env.step_dt, "elapsed_seconds": elapsed,
             "episodes_per_second": completed / max(elapsed, 1.0e-9),
             "steps_per_second": steps / max(elapsed, 1.0e-9),
-            "eta_seconds": elapsed * (self.target - completed) / completed if completed else None,
-            "phases": dict(zip(("settling", "warmup", "active", "waiting_for_reset"), phases)),
+            "eta_seconds": elapsed * (self.target - progress_count) / progress_count if progress_count else None,
+            "phases": dict(zip(("settling", "warmup", "active", "waiting_for_reset", "full"), phases)),
             "diagnostics": dict(zip(("spawn_rejections", "warmup_collisions", "warmup_resets", "resets"), counters)),
             "timing_seconds": timings,
             "timing_definition": "cumulative host wall time; asynchronous GPU work may be charged at a later sync",
@@ -138,10 +151,12 @@ class CollectionTracker:
             self.log.event(record)
         if self.interval_s > 0 or status != "collecting":
             eta = f"{record['eta_seconds']:.0f}s" if record["eta_seconds"] is not None else "pending"
+            progress_text = (f"frames={self.frames}/{self.target} episodes={completed}" if self.fixed
+                             else f"episodes={completed}/{self.target} frames={self.frames}")
             print(
                 f"[FDM] collect split={collector.cfg.split} round={self.round_index} status={status} "
-                f"episodes={completed}/{self.target} ({100 * completed / self.target:.1f}%) "
-                f"frames={self.frames} shards={record['shards_written']} steps={steps} "
+                f"{progress_text} ({100 * progress_count / self.target:.1f}%) "
+                f"shards={record['shards_written']} steps={steps} "
                 f"steps/s={record['steps_per_second']:.1f} episodes/s={record['episodes_per_second']:.3f} "
                 f"eta={eta} phases={record['phases']} diagnostics={record['diagnostics']} "
                 f"times_s={ {name: round(value, 2) for name, value in timings.items()} }",

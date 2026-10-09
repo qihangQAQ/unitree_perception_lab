@@ -4,9 +4,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 
-def test_spawn_import_does_not_launch_simulator_or_parse_arguments():
-    script = Path(__file__).resolve().parents[2] / "scripts" / "fdm" / "train_fdm.py"
+
+@pytest.mark.parametrize("entrypoint", ["train_fdm.py", "benchmark_fdm.py"])
+def test_spawn_import_does_not_launch_simulator_or_parse_arguments(entrypoint):
+    script = Path(__file__).resolve().parents[2] / "scripts" / "fdm" / entrypoint
     result = subprocess.run(
         [
             sys.executable,

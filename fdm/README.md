@@ -2,6 +2,20 @@
 
 这一目录对应“不带 MPPI”的第一阶段：冻结已有的 G1 高程图 locomotion policy，在线 rollout，按 episode 分片保存数据，并交替训练单个 height-map FDM。
 
+新数据集默认使用每环境固定容量采集：每轮重新 reset 环境和策略 hidden state，最多记录
+`num_envs × frames_per_env` 个真实帧（默认每环境 150 帧，可包含多条 episode）。达到容量后进入训练；
+平均填充率达到 95% 且最后 10% 进度节点后的等待超过此前平均进度间隔的 1.5 倍时，也会结束采集。
+另有 policy step 上限；未达到最低填充率就触发上限会报错，不会默默训练异常数据。
+
+轮末未完成轨迹以 `ROUND_CUT` 封口，释放原始缓冲，再准备训练样本；下轮不接着上轮的半条轨迹采集。
+训练期间不调用 `env.step()`，不会同时产生 rollout 数据。已填满的环境在等待其他环境期间仍参加向量化仿真，
+但不再记录数据。指令生成和 CPU 帧拷贝按同一步的环境批量执行。
+
+参考项目每轮重置 replay buffer，并有慢尾提前结束及复制数据补齐的机制。这里仅在有效窗口采样时允许重复，
+原始 shard 不拼接其他环境的轨迹。每轮先按碰撞/低运动权重抽取 **80,000 个训练窗口**，再预计算缓存，
+8 个 epoch 内打乱并复用同一窗口池；固定 validation 保持全部自然分布窗口。`--samples-per-round 0`
+可保留原来的全窗口加权采样训练。80,000 是本实现的最终训练池大小，参考项目的 80,000 则是后续过滤前的候选数，二者不完全等价。
+
 训练地形随本项目保存在 `fdm/assets/terrains/navigation_terrain_wall_usd_merge_large_single_object_maze.usd`，与参考 FDM 的原始 USD 内容一致。USD 通过 Git LFS 管理；克隆或更新仓库后如果只得到指针文件，先在仓库根目录执行 `git lfs pull`。两个入口默认使用此地形，只有切换地形时才需要传 `--terrain-usd`。
 
 核心约束已经固化在代码和测试中：
@@ -24,8 +38,8 @@ conda activate unitree-lab
 python scripts/fdm/collect_rollouts.py \
   --headless --device cuda:0 \
   --checkpoint logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt \
-  --dataset datasets/fdm_g1/baseline \
-  --split train --num-envs 256 --num-episodes 256
+  --dataset datasets/fdm_g1/fixed_v1 \
+  --split train --num-envs 256 --frames-per-env 150
 ```
 
 执行完整的“固定 validation → 每轮采集 → 8 epoch 训练 → 验证 → checkpoint”流程：
@@ -34,25 +48,49 @@ python scripts/fdm/collect_rollouts.py \
 python scripts/fdm/train_fdm.py \
   --headless --device cuda:0 \
   --checkpoint logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt \
-  --dataset datasets/fdm_g1/baseline \
-  --output logs/fdm_g1/baseline
+  --dataset datasets/fdm_g1/fixed_v1 \
+  --output logs/fdm_g1/fixed_v1 \
+  --frames-per-env 150 --validation-frames-per-env 150 \
+  --samples-per-round 80000 --dataset-cache auto --workers 0
 ```
 
 检查数据和离线评估：
 
 ```bash
-python scripts/fdm/inspect_dataset.py --dataset datasets/fdm_g1/baseline --split train
+python scripts/fdm/inspect_dataset.py --dataset datasets/fdm_g1/fixed_v1 --split train
 python scripts/fdm/evaluate_fdm.py \
-  --checkpoint logs/fdm_g1/baseline/fdm_round_019.pt \
-  --dataset datasets/fdm_g1/baseline --split val --device cuda
+  --checkpoint logs/fdm_g1/fixed_v1/fdm_round_019.pt \
+  --dataset datasets/fdm_g1/fixed_v1 --split val --device cuda
 ```
+
+50 GiB CPU 内存的服务器可以先使用 `--num-envs 1024 --batch-size 2048 --dataset-cache-gb 8`，
+确认采集、缓存和训练的内存日志后再增加环境数。按当前字段计算，1024 × 150 的原始帧缓冲约 1.81 GiB，
+4096 × 150 约 7.26 GiB；80,000 个 float16 高程图训练样本约 0.95 GiB。
+这些都不包括 Isaac Sim、固定 validation、写盘暂存、模型和 batch；50 GiB 不是所有配置下的容量保证。
+`--batch-size 2048` 还取决于 GPU 显存。配置示例见 `configs/collection.yaml`；入口当前通过 CLI 配置，不自动读取 YAML。
+
+## Checkpoint 与后续二阶段
+
+本次从头训练，使用新的 dataset/output 目录，不传 `--resume`。入口只使用固定容量采集，
+不兼容旧 episodes 机制的数据目录或 checkpoint，也没有旧轮次离线补训入口。
+
+新 checkpoint 继续保存 `model_state_dict`、`model_cfg`、优化器、scheduler、累计 epoch、
+随机数状态和数据来源，并记录格式版本。同一阶段中断后仍可用 `--resume` 恢复当前格式的完整轮 checkpoint；
+`--collection-rounds`、`--epochs-per-round` 必须与原训练计划一致。
+可选的 `--resume-round-summary` 仅用于当前固定容量机制下一轮已完成采集的数据，不支持旧报告。
+仿真状态没有保存，因此恢复 rollout 不保证逐位复现。
+
+未来接入 MPPI 的二阶段可以使用 checkpoint 中的 `model_cfg` 构建 FDM，加载
+`model_state_dict` 作为初始化权重，并设置新的二阶段数据与训练计划。
+这条模型加载路径不依赖一阶段 dataset 或一阶段 scheduler 是否已经结束；
+优化器状态也仍保存在文件中，二阶段实现时可按训练方案选择是否恢复。
+当前入口的 `--resume` 用于同一阶段的精确训练状态恢复，MPPI 采集与二阶段入口后续再实现。
 
 ## 小显卡调试与进度
 
 `train_fdm.py` 先采集固定 validation，再采集第一轮 train，最后才进行 FDM 训练。
-`--num-envs` 是并行环境数，`--validation-episodes` 和 `--episodes-per-round` 是轨迹总数；
-把环境从 4096 减到 1，并不会减少需要采集的 4096 条轨迹。`--batch-size` 仅影响后面的模型训练。
-单条轨迹最多执行 150 个 0.5 秒 command，因此单环境采集大量轨迹可能长时间停留在 validation 阶段。
+固定容量模式中，`--num-envs` 是并行环境数，`--frames-per-env` 是每环境每轮总帧数，
+`--validation-frames-per-env` 是验证集的每环境帧数；`--batch-size` 仅影响后面的模型训练。
 
 本机先用独立目录跑一个小规模完整流程：
 
@@ -60,12 +98,11 @@ python scripts/fdm/evaluate_fdm.py \
 python -u scripts/fdm/train_fdm.py \
   --headless \
   --checkpoint logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt \
-  --dataset datasets/fdm_g1/stage1_v3_smoke \
-  --output logs/fdm_g1/stage1_v3_smoke \
-  --num-envs 1 \
-  --validation-episodes 4 \
-  --episodes-per-round 8 \
-  --collection-rounds 1 \
+  --dataset datasets/fdm_g1/fixed_v1_smoke \
+  --output logs/fdm_g1/fixed_v1_smoke \
+  --num-envs 4 --frames-per-env 24 --validation-frames-per-env 24 \
+  --samples-per-round 256 \
+  --collection-rounds 2 \
   --epochs-per-round 1 \
   --batch-size 32 \
   --workers 0 \
@@ -73,18 +110,77 @@ python -u scripts/fdm/train_fdm.py \
 ```
 
 采集、窗口索引、训练和验证默认每 10 秒输出进度（`--log-interval 0` 关闭周期日志）。
-采集日志包含完成 episode 数、仿真步数、各环境所处阶段和估计剩余时间；
+采集日志包含实际帧/目标帧、完成 episode 数、仿真步数、各环境所处阶段和估计剩余时间；
 即使第一条轨迹还没结束，也能通过 `steps` 判断是否推进。若某个仿真调用本身阻塞，周期日志也会停止。
-数据默认累计约 20,000 帧才写一个 shard，采集结束时也会写入剩余完整轨迹，因此尚无 shard 不代表没有运行。
+数据默认累计约 20,000 帧才写一个 shard，采集结束时也会写入剩余已封口轨迹，因此尚无 shard 不代表没有运行。
 在线训练默认 `--workers 0` 以减少内存占用；需要多进程加载时可显式设置 `--workers 4`，使用 `spawn`，
 worker 不会重新启动 Isaac Sim，也不会通过 `fork` 继承正在运行的仿真进程。
 改变 rollout 参数时使用新数据目录，避免与已有 manifest 的实验元数据冲突。
+
+训练进度会输出实际 `device`，以及 `last_s(data=...,step=...)`（最近一批）和
+`avg_s(data=...,step=...)`（本 epoch 每批平均耗时）。`data` 包含等待 DataLoader 和拼接 batch，
+分片模式下还包含读取和构造样本；`step` 包含传入设备、前向、损失、反向和参数更新。
+CUDA 损失读取完成后才结束 step 计时，避免异步 GPU 计算被误计入下一批数据等待。
+多 worker 时 data 是主进程实际等待时间，不是各 worker 的工作时间之和。
+`shard_loads` 是当前 epoch 累计完整分片加载次数（仅 workers=0 可直接统计）。
+
+在线训练与测速默认 `--dataset-cache auto`：内存足够时使用 `memory`，不足时使用预计算的 `mmap` 文件。
+索引/统计完成并选定训练窗口池后，顺序扫描相关分片一次，预先计算相对状态、未来轨迹、碰撞标签和掩码。
+固定 validation 缓存只准备一次；每轮仅缓存新采集的 train 数据，连续用于该轮全部 epoch。
+保存轮次 checkpoint 后释放 train 缓存，再采集下一轮；不会累积缓存所有轮次。
+训练/验证时索引预计算张量，不再反复反序列化分片或变换窗口，训练日志应显示 `cache=memory` 或 `cache=mmap`、`shard_loads=0`。
+
+样本缓存直接预分配为最终大小，预处理临时数据限制为一个原始分片和小批窗口。
+常规采集的高程图保留 float16，取 batch 时才转 float32；已有 v3 文件若包含 float32 高程图，则保留其精度。
+使用受限样本池时仍按原来的碰撞/低运动目标权重抽样，只抽一次，然后每个 epoch 打乱该池；
+报告单列源窗口数、池大小、独立窗口数和重复次数。原始窗口标签不变。
+
+缓存前打印当前 split、已常驻缓存及二者合计的预计 GiB。可用 `--dataset-cache-gb 8` 将
+**固定 validation + 当前 train 的常驻 RAM 样本张量**限制在 8 GiB；不设置时没有显式缓存容量上限。
+预算不包括 mmap 的动态驻留页、仿真、模型、Python 窗口索引、原始分片和临时 batch，不能作为整个进程的 RAM 上限。
+此外会尽可能读取系统可用 RAM 和常见容器内存限制，在分配前检查预处理空间并预留 20% 可用 RAM；
+这只是预检查，不能保证其他进程同时分配内存时不发生竞争。强制 memory 模式预算不足会报错；auto 会尝试 mmap。
+默认继续使用 `--workers 0`；多进程模式仍用 spawn，大缓存跨进程传递还需要足够的系统共享内存。
+
+容器可用内存估算同时读取 `memory.stat`，计入保守的可回收 inactive file 缓存，扣除共享内存和
+dirty/writeback 限制，并受宿主机 `MemAvailable` 与容器限额约束；不再只用 `limit-current`。
+每次索引/缓存前后及每轮释放后，`Memory stage=...` 显示进程 RSS、宿主机可用量、容器 anon/file 占用、
+可回收估计和未完成采集轨迹的帧数，也写入 `progress.jsonl`。这些值是采样时刻的估计，不是分配保证。
+
+`--dataset-cache auto` 优先使用与 memory 模式相同的预计算 CPU 张量。若预检查认为容量不足，
+当前数据集改用 mmap，保留已准备的 validation 缓存。若连一个原始 shard 的预处理空间都不足则明确报错。
+`mmap` 将结果原子发布到 dataset 下的 `.fdm_sample_cache/<hash>/`，key 包含源文件大小/修改时间、
+窗口索引与变换版本；相同数据和窗口池可以直接复用。spawn worker 自行打开映射，不复制整个缓存。
+它仍会占用磁盘和操作系统页缓存，内存压力大时吞吐受磁盘性能影响，但不会退回每批重读原始 shard 的路径。
+这些文件可在没有训练使用时删除；原始 shard 足以重新构建。不同轮次的 mmap 文件会留在磁盘，不自动清理。
+
+`--dataset-cache shard` 仅保留作旧机制对照。此模式保留两个分片的 LRU 缓存，
+同一批内按分片/episode 集中读取，再恢复原始采样顺序和重复样本，每个分片每批至多加载一次。
+它仍有跨 batch 的重复读盘，吞吐通常低于内存模式。`--dataset-cache-gb` 不限制此模式的原始分片缓存。
+
+如果训练异常缓慢，可直接在已有 train 数据上测量几批完整前向/反向：
+
+```bash
+python -u scripts/fdm/benchmark_fdm.py \
+  --dataset datasets/fdm_g1/fixed_v1 \
+  --batch-size 2048 --batches 3 --epochs 2 --device cuda:0 \
+  --samples-per-round 80000 --dataset-cache auto --dataset-cache-gb 8
+```
+
+测速默认跑 2 个 epoch、每个 3 批，检查缓存能否跨 epoch 复用。指定报告可只测当前轮；
+省略 `--round-summary` 才会索引全部 train 分片。窗口池默认 80,000，准备缓存后才取测试 batch。
+使用临时随机初始化模型，不启动 Isaac Sim，不写原始数据或 checkpoint；mmap 模式会写预计算文件缓存。
+因此它用于定位瓶颈，不能恢复当前训练权重；独立测速也不包含在线仿真常驻时的资源竞争。
+首先比较 `data` 与 `step`，第一批可能包含 GPU 初始化开销，再观察后续批次。
 
 ## 数据帧语义
 
 普通帧 `F_k` 是 command 决策时刻。它的 history/map 是 `t_k` 的观测，`command_plan[0]` 是紧接着执行的 `u_k`。正常情况下下一帧 `F_{k+1}` 是 `u_k` 执行 0.5 秒后的监督结果。发生碰撞时，下一帧可能是小于 0.5 秒的事件帧，实际间隔保存在 `delta_t`。
 
-每个 shard 只保存完整 episode，并通过临时文件加原子 rename 发布。manifest 同时记录策略和 USD 的 SHA-256、空间 split、body/joint 顺序和 rollout 参数。已有 manifest 的元数据不一致时会拒绝追加，避免混入不同实验条件。
+每个 shard 保存完整 episode 或已封口的真实 episode 片段，并通过临时文件加原子 rename 发布。
+`ROUND_CUT` 与碰撞分开编码，不能作为完整未来或碰撞补齐标签；窗口不会跨 episode/reset/轮次。
+manifest 同时记录策略和 USD 的 SHA-256、空间 split、body/joint 顺序、rollout 参数及固定采集配置。
+已有 manifest 的元数据不一致时会拒绝追加，避免混入不同实验条件。
 
 ## Safe spawn
 
@@ -113,14 +209,16 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q tests/fdm
 
 `progress.jsonl` 在采集开始、每个日志周期和结束/失败/中断时追加记录；`--log-interval 0` 只保留这些阶段边界记录。
 失败时保存异常类型与消息，堆栈在 Isaac Sim 关闭之前立即打印。
-记录包含 split、round（从 0 开始）、episode 完成比例、当前调用记录的帧数、写盘 shard 数、步数、速度、ETA、阶段环境数，
+记录包含 split、round（从 0 开始）、填充比例、当前调用记录的帧数、写盘 shard 数、步数、速度、ETA、阶段环境数，
 以及出生检查重试、warmup 碰撞和 reset 计数。`warmup_resets` 指 reset 发生时仍处于 warmup 的次数；
 已检测到的 warmup 碰撞单独计入 `warmup_collisions`。episode/s、steps/s、ETA 使用本次采集累计墙钟时间。
+固定容量模式另有 `target_frames`、`collection_mode=fixed` 和 `stop_reason`（capacity/slow_tail/step_limit），
+完成比例与 ETA 按帧容量计算。
 
 耗时拆为冻结策略推理、仿真、指令生成、数据处理、写盘。这是 CPU 侧程序段墙钟耗时，
 不逐段强制同步 GPU，因此异步 GPU 工作可能计入后续同步所在的程序段；不能将其当作精确 CUDA kernel profiling。
 接触力峰值以 N 为单位，覆盖本次接收的完整轨迹 active 阶段内的物理子步，分别记录 torso、左手和右手。
-跨采集轮保留的未完成轨迹在完成时计入对应轮；它的力峰值和完整轨迹统计包含此前已采集的部分。
+每轮仅统计本轮真实轨迹和封口片段。
 
 每份 `*_summary.json` 记录来源 manifest/shard、统计定义及以下内容：
 

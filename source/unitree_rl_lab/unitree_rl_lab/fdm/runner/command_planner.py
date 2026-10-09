@@ -80,13 +80,12 @@ class CorrelatedCommandPlanner:
         straight = (selector >= correlated_limit) & (selector < straight_limit)
         command[straight, 0] = target_vx[straight]
         command[straight, 1] = target_vy[straight]
-        if torch.any(straight):
-            command[straight, 2] = torch.randn(
-                int(straight.sum()), device=self.device, generator=self.generator
-            ) * self.cfg.straight_yaw_std
+        straight_yaw = torch.randn(count, device=self.device, generator=self.generator) * self.cfg.straight_yaw_std
+        command[straight, 2] = straight_yaw[straight]
 
         turn = (selector >= straight_limit) & (selector < turn_limit)
-        command[turn, 0] = self._uniform(int(turn.sum()), 0.0, self.cfg.turn_forward_max)
+        turn_forward = self._uniform(count, 0.0, self.cfg.turn_forward_max)
+        command[turn, 0] = turn_forward[turn]
         command[turn, 1] = target_vy[turn]
         command[turn, 2] = target_wz[turn]
         # The remaining stop samples stay exactly zero.

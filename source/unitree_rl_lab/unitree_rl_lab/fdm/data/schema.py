@@ -27,6 +27,7 @@ class TerminationReason(IntEnum):
     TIMEOUT = 2
     WATCHDOG = 3
     INITIALIZATION = 4
+    ROUND_CUT = 5
 
 
 @dataclass

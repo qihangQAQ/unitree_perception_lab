@@ -8,7 +8,8 @@ import traceback
 from isaaclab.app import AppLauncher
 from unitree_rl_lab.fdm.config import DEFAULT_TERRAIN_USD
 
-from _common import configure_safe_spawn, dataset_metadata, require_input_file
+from _common import (add_collection_args, collect_fixed, configure_safe_spawn, dataset_metadata,
+                     require_input_file, resolve_collection_settings)
 
 parser = argparse.ArgumentParser(description="Collect G1 FDM rollout trajectories.")
 parser.add_argument("--task", default="Unitree-G1-29dof-FDM-Rollout")
@@ -19,13 +20,13 @@ parser.add_argument("--output", default="logs/fdm_g1/collection", help="Root for
 parser.add_argument("--log-interval", type=float, default=10.0)
 parser.add_argument("--split", choices=("train", "val", "test"), default="train")
 parser.add_argument("--num-envs", type=int, default=256)
-parser.add_argument("--num-episodes", type=int, default=256)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--disable-policy-corruption", action="store_true")
+add_collection_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
-if args.num_envs < 1 or args.num_episodes < 1 or args.log_interval < 0:
-    parser.error("Environment/episode counts must be positive and --log-interval must be nonnegative.")
+if args.num_envs < 1 or args.log_interval < 0:
+    parser.error("Environment count must be positive and --log-interval must be nonnegative.")
 
 try:
     args.checkpoint = require_input_file(args.checkpoint, "--checkpoint")
@@ -44,12 +45,20 @@ from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 import unitree_rl_lab.tasks  # noqa: F401
 from unitree_rl_lab.fdm.config import RolloutCfg
 from unitree_rl_lab.fdm.data import EpisodeShardWriter, FDMWindowDataset
-from unitree_rl_lab.fdm.runner import FDMRolloutCollector, FrozenRecurrentPolicy
+from unitree_rl_lab.fdm.runner import FixedRolloutCollector, FrozenRecurrentPolicy
 from unitree_rl_lab.fdm.runner.collection_log import CollectionLog
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
 
 def main() -> None:
+    from pathlib import Path
+    from unitree_rl_lab.fdm.data.shard_writer import read_manifest
+    from unitree_rl_lab.fdm.training.resume import resume_dataset_metadata
+
+    existing_metadata = None
+    if (Path(args.dataset) / "manifest.json").exists():
+        existing_metadata = read_manifest(args.dataset)[1]["metadata"]
+    settings = resolve_collection_settings(args, existing_metadata)
     collection_log = CollectionLog(args.output)
     rollout_cfg = RolloutCfg(
         task_name=args.task,
@@ -79,14 +88,17 @@ def main() -> None:
         env.unwrapped.device,
     )
     metadata = dataset_metadata(env, rollout_cfg)
+    metadata["collection"] = settings
+    if existing_metadata is not None:
+        metadata = resume_dataset_metadata(metadata, existing_metadata)
     with EpisodeShardWriter(
         args.dataset,
         args.split,
         metadata,
         max_frames_per_shard=rollout_cfg.max_frames_per_shard,
     ) as writer:
-        collector = FDMRolloutCollector(env, observations, policy, writer, rollout_cfg)
-        result = collector.collect(args.num_episodes, log_interval_s=args.log_interval, log=collection_log)
+        collector = FixedRolloutCollector(env, observations, policy, writer, rollout_cfg)
+        result = collect_fixed(collector, args, split=args.split, seed=args.seed, log=collection_log)
         new_shards = list(writer.written_paths)
     dataset = FDMWindowDataset(
         args.dataset, args.split, horizon=rollout_cfg.prediction_horizon, shard_paths=new_shards,

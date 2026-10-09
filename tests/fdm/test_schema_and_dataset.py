@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import torch
+import pytest
 from torch.utils.data import DataLoader
 
 from unitree_rl_lab.fdm.data import EpisodeData, EpisodeShardWriter, FDMWindowDataset, Split, TerminationReason
@@ -85,10 +86,12 @@ def test_manifest_metadata_is_stable_across_json_round_trip(tmp_path: Path):
         assert writer.next_episode_id == 1
 
 
-def test_dataset_can_be_loaded_by_spawned_workers(tmp_path: Path):
+@pytest.mark.parametrize("cache_mode", ["shard", "memory", "mmap"])
+def test_dataset_can_be_loaded_by_spawned_workers(tmp_path: Path, cache_mode):
     with EpisodeShardWriter(tmp_path, "train", {"fixture": "spawn"}) as writer:
         writer.append(_episode())
     dataset = FDMWindowDataset(tmp_path, "train")
+    dataset.prepare_cache(cache_mode, log_interval_s=0)
     loader = DataLoader(dataset, batch_size=1, num_workers=2, multiprocessing_context="spawn", timeout=30)
     batches = list(loader)
     assert len(batches) == len(dataset)

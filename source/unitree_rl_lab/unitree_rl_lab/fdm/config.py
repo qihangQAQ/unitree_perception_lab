@@ -192,6 +192,7 @@ class TrainCfg:
     weight_decay: float = 1.0e-5
     gradient_clip_norm: float = 1.0
     num_workers: int = 4
+    samples_per_round: int = 80_000  # Preselect before caching; 0 uses all windows.
     collision_window_fraction: float = 0.35
     low_motion_fraction: float = 0.10
     position_weight: float = 1.7
@@ -204,5 +205,7 @@ class TrainCfg:
     def validate(self) -> None:
         if self.collection_rounds < 1 or self.epochs_per_round < 1 or self.batch_size < 1:
             raise ValueError("Training counts must be positive.")
+        if self.samples_per_round < 0:
+            raise ValueError("samples_per_round must be nonnegative.")
         if not 0.0 <= self.collision_window_fraction <= 1.0:
             raise ValueError("collision_window_fraction must be in [0, 1].")

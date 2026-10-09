@@ -24,11 +24,12 @@ class ProgressLogger:
             return
         elapsed = now - self.started
         rate = completed / elapsed if elapsed > 0 else 0.0
+        rate_text = f"{rate:.3g}" if 0 < rate < 0.01 else f"{rate:.2f}"
         eta = f"{max(0, self.total - completed) / rate:.0f}s" if rate > 0 else "pending"
         suffix = f" {detail()}" if detail is not None else ""
         print(
             f"[FDM] {self.label}: {self.unit}={completed}/{self.total} "
-            f"elapsed={elapsed:.1f}s rate={rate:.2f}/s eta={eta}{suffix}",
+            f"elapsed={elapsed:.1f}s rate={rate_text}/s eta={eta}{suffix}",
             flush=True,
         )
         self.last_log = now
