@@ -9,7 +9,7 @@ import torch
 from ..data.schema import TerminationReason, Split
 from ..planning.goals import LocalGoalManager
 from ..planning.mppi import MPPIPlanner
-from ..utils.se2 import relative_pose_sequence, yaw_from_quaternion_xyzw
+from .navigation_observation import root_to_sensor_transform, state_from_history
 from .collector import _Phase
 from .fixed_collector import FixedRolloutCollector
 
@@ -128,17 +128,8 @@ class Stage2RolloutCollector(FixedRolloutCollector):
                 raise RuntimeError("MPPI requires a coherent command-boundary observation.")
             rows = torch.searchsorted(snapshot[1], mppi_ids)
             history = self.state_history[mppi_ids]
-            relative = relative_pose_sequence(history[..., :3], history[..., 3:7])
-            state = torch.cat((relative, history[..., 7:8]), dim=-1)
-            transform = None
-            sensor = getattr(self.height_sensor, "data", None)
-            if sensor is not None:
-                sensor_yaw = yaw_from_quaternion_xyzw(sensor.quat_w[mppi_ids][:, (1, 2, 3, 0)])
-                root_yaw = yaw_from_quaternion_xyzw(raw[:, 3:7])
-                delta = raw[:, :2] - sensor.pos_w[mppi_ids, :2]
-                transform = torch.stack((sensor_yaw.cos() * delta[:, 0] + sensor_yaw.sin() * delta[:, 1],
-                                         -sensor_yaw.sin() * delta[:, 0] + sensor_yaw.cos() * delta[:, 1],
-                                         root_yaw - sensor_yaw), dim=-1)
+            state = state_from_history(history)
+            transform = root_to_sensor_transform(self.height_sensor, raw, mppi_ids)
             plans = self.mppi.plan(mppi_ids, state, self.proprio_history[mppi_ids], snapshot[2][rows],
                                    snapshot[3][rows], self.goals.local(mppi_ids, raw), map_transform=transform)
             self.planner.plan[mppi_ids] = plans

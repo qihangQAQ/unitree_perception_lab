@@ -54,11 +54,21 @@ class MPPIPlanner:
     The returned plan is final (bounded and fallback checked) before recording.
     """
 
-    def __init__(self, model, num_envs, *, cfg=None, command_cfg=None, seed=42):
+    def __init__(self, model, num_envs, *, cfg=None, command_cfg=None, seed=42,
+                 forward_only=False, turn_candidates=False, independent_rng=False,
+                 record_predictions=False):
         self.cfg = cfg or MPPICfg()
         self.cfg.validate()
         command_cfg = command_cfg or CommandSamplingCfg()
         command_cfg.validate()
+        self.forward_only = forward_only
+        self.turn_candidates = turn_candidates
+        self.record_predictions = record_predictions
+        if forward_only and (command_cfg.min_forward_speed != 0
+                             or command_cfg.min_lateral_speed != 0 or command_cfg.max_lateral_speed != 0):
+            raise ValueError("Forward-only planning requires vx >= 0 (including stop) and vy == 0.")
+        if turn_candidates and self.cfg.candidates < 8:
+            raise ValueError("Navigation turn candidates require at least eight candidates.")
         self.model = model.eval().requires_grad_(False)
         # deepcopy() of a CUDA model loses cuDNN's packed recurrent storage.
         # Repack once per snapshot, not once for every candidate chunk.
@@ -72,10 +82,17 @@ class MPPIPlanner:
         self.upper = torch.tensor([command_cfg.max_forward_speed, command_cfg.max_lateral_speed,
                                    command_cfg.max_yaw_rate], device=self.device)
         self.sigma = torch.tensor(self.cfg.noise_std, device=self.device)
+        if forward_only:
+            self.sigma[1] = 0
         self.mean = torch.zeros(num_envs, self.horizon, 3, device=self.device)
         self.previous = torch.zeros(num_envs, 3, device=self.device)
         self.initialized = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
         self.generator = torch.Generator(device=self.device).manual_seed(seed)
+        self.generators = ([torch.Generator(device=self.device).manual_seed(seed + i * 100003)
+                            for i in range(num_envs)] if independent_rng else None)
+        self.last_pose = torch.zeros(num_envs, self.horizon, 4, device=self.device)
+        self.last_risk = torch.zeros(num_envs, device=self.device)
+        self.last_invalid = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
         self.reset_statistics()
 
     def reset_statistics(self):
@@ -90,6 +107,16 @@ class MPPIPlanner:
         self.initialized[ids] = False
         if seed is not None:
             self.generator.manual_seed(seed)
+            if self.generators is not None:
+                for index, generator in enumerate(self.generators):
+                    generator.manual_seed(seed + index * 100003)
+
+    def seed_streams(self, seeds):
+        """Independent trial streams do not depend on which other trials finish."""
+        if self.generators is None or len(seeds) != len(self.generators):
+            raise ValueError("One seed per independent MPPI stream is required.")
+        for generator, seed in zip(self.generators, seeds):
+            generator.manual_seed(int(seed))
 
     def statistics(self):
         latency = torch.tensor(self.latencies or [0.0])
@@ -139,7 +166,7 @@ class MPPIPlanner:
         return torch.cat(costs), torch.cat(risks)
 
     @torch.inference_mode()
-    def plan(self, ids, state, proprio, height, invalid_map, goal_local, *, map_transform=None):
+    def plan(self, ids, state, proprio, height, invalid_map, goal_local, *, map_transform=None, align_mask=None):
         if not len(ids):
             return self.mean[ids]
         if self.model.training:
@@ -158,11 +185,16 @@ class MPPIPlanner:
         nominal = nominal.clamp(self.lower, self.upper)
         shifted = torch.cat((self.mean[ids, 1:], self.mean[ids, -1:]), dim=1)
         mean = torch.where(self.initialized[ids, None, None], shifted, nominal)
+        mean = mean.clamp(self.lower, self.upper)
         rows = torch.arange(batch, device=self.device)
         population_rows = rows.repeat_interleave(population)
         last_invalid = torch.zeros(batch, dtype=torch.bool, device=self.device)
         for _ in range(self.cfg.iterations):
-            noise = torch.randn(batch, population, self.horizon, 3, device=self.device, generator=self.generator)
+            if self.generators is None:
+                noise = torch.randn(batch, population, self.horizon, 3, device=self.device, generator=self.generator)
+            else:
+                noise = torch.stack([torch.randn(population, self.horizon, 3, device=self.device,
+                                                 generator=self.generators[i]) for i in ids.tolist()])
             beta = self.cfg.noise_correlation
             for step in range(1, self.horizon):
                 noise[:, :, step] = beta * noise[:, :, step - 1] + math.sqrt(1 - beta * beta) * noise[:, :, step]
@@ -170,6 +202,21 @@ class MPPIPlanner:
             candidates[:, 0] = mean
             candidates[:, 1] = 0  # Explicit stop candidate; command bounds include zero.
             candidates[:, 2] = nominal
+            if self.turn_candidates:
+                candidates[:, 3:8] = 0
+                rate = self.upper[2]
+                candidates[:, 3, :, 2] = rate
+                candidates[:, 4, :, 2] = -rate
+                steps = torch.arange(self.horizon, device=self.device)[None]
+                for candidate, direction in ((5, 1), (6, -1)):
+                    turn_angle = torch.remainder(angle * direction, 2 * math.pi)
+                    turn_steps = torch.ceil(turn_angle / (rate * self.model.cfg.command_timestep)).clamp(1, self.horizon - 1)
+                    turning = steps < turn_steps[:, None]
+                    candidates[:, candidate, :, 2] = torch.where(turning, direction * rate, 0.)
+                    candidates[:, candidate, :, 0] = torch.where(turning, 0., self.upper[0] * .65)
+                candidates[:, 7, :, 0] = self.upper[0] * .65
+            if align_mask is not None:
+                candidates[align_mask, :, 0, 0] = 0
             costs, risks = self._score(context, candidates.flatten(0, 1), population_rows,
                                        goal_local, invalid_map, self.previous[ids], map_transform)
             costs, risks = costs.view(batch, population), risks.view(batch, population)
@@ -190,6 +237,12 @@ class MPPIPlanner:
         self.previous[ids] = mean[:, 0]
         self.initialized[ids] = True
         self.all_invalid += int(last_invalid.sum())
+        self.last_invalid[ids] = last_invalid
+        if self.record_predictions:
+            # Reuse encoded observations; save only the selected trajectory.
+            selected = self.model.predict_from_context(context, mean)
+            self.last_pose[ids] = selected["future_pose"]
+            self.last_risk[ids] = selected["collision_logits"].sigmoid().amax(dim=1)
         self.decisions += batch
         self.calls += 1
         if self.device.type == "cuda":

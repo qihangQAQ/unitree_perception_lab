@@ -108,7 +108,8 @@ def git_commit() -> str:
 def configure_safe_spawn(env_cfg, rollout_cfg) -> None:
     """Copy recorded rollout settings into reset and collision terms."""
 
-    env_cfg.terminations.navigation_collision.params["threshold"] = rollout_cfg.collision_force_threshold
+    if env_cfg.terminations.navigation_collision is not None:
+        env_cfg.terminations.navigation_collision.params["threshold"] = rollout_cfg.collision_force_threshold
     reset = env_cfg.events.reset_base
     reset.params["xy_jitter"] = rollout_cfg.spawn_xy_jitter
     analysis = reset.func
