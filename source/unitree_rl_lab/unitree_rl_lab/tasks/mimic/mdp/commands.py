@@ -6,7 +6,7 @@ import os
 import torch
 from collections.abc import Sequence
 from dataclasses import MISSING
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from isaaclab.assets import Articulation
 from isaaclab.managers import CommandTerm, CommandTermCfg
@@ -63,6 +63,8 @@ class MotionCommand(CommandTerm):
 
     def __init__(self, cfg: MotionCommandCfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
+        if cfg.start_frame_mode not in ("adaptive", "first"):
+            raise ValueError(f"Unsupported motion start frame mode: {cfg.start_frame_mode!r}")
 
         self.robot: Articulation = env.scene[cfg.asset_name]
         self.robot_anchor_body_index = self.robot.body_names.index(self.cfg.anchor_body_name)
@@ -73,6 +75,7 @@ class MotionCommand(CommandTerm):
 
         self.motion = MotionLoader(self.cfg.motion_file, self.body_indexes, device=self.device)
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self._last_resample_step = torch.zeros_like(self.time_steps)
         self.body_pos_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 3, device=self.device)
         self.body_quat_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 4, device=self.device)
         self.body_quat_relative_w[:, :, 0] = 1.0
@@ -243,7 +246,14 @@ class MotionCommand(CommandTerm):
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
             return
-        self._adaptive_sampling(env_ids)
+        if self.cfg.start_frame_mode == "first":
+            self.time_steps[env_ids] = 0
+            self._last_resample_step[env_ids] = self._env.common_step_counter
+            self.metrics["sampling_entropy"][env_ids] = 0.0
+            self.metrics["sampling_top1_prob"][env_ids] = 1.0
+            self.metrics["sampling_top1_bin"][env_ids] = 0.0
+        else:
+            self._adaptive_sampling(env_ids)
 
         root_pos = self.body_pos_w[:, 0].clone()
         root_ori = self.body_quat_w[:, 0].clone()
@@ -277,7 +287,12 @@ class MotionCommand(CommandTerm):
         )
 
     def _update_command(self):
-        self.time_steps += 1
+        if self.cfg.start_frame_mode == "first":
+            # Automatic resets run before command updates in the same environment step.
+            # Keep frame zero available for the next policy action after every reset.
+            self.time_steps += (self._env.common_step_counter > self._last_resample_step).long()
+        else:
+            self.time_steps += 1
         env_ids = torch.where(self.time_steps >= self.motion.time_step_total)[0]
         self._resample_command(env_ids)
 
@@ -293,10 +308,11 @@ class MotionCommand(CommandTerm):
         self.body_quat_relative_w = quat_mul(delta_ori_w, self.body_quat_w)
         self.body_pos_relative_w = delta_pos_w + quat_apply(delta_ori_w, self.body_pos_w - anchor_pos_w_repeat)
 
-        self.bin_failed_count = (
-            self.cfg.adaptive_alpha * self._current_bin_failed + (1 - self.cfg.adaptive_alpha) * self.bin_failed_count
-        )
-        self._current_bin_failed.zero_()
+        if self.cfg.start_frame_mode == "adaptive":
+            self.bin_failed_count = (
+                self.cfg.adaptive_alpha * self._current_bin_failed + (1 - self.cfg.adaptive_alpha) * self.bin_failed_count
+            )
+            self._current_bin_failed.zero_()
 
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
@@ -359,6 +375,9 @@ class MotionCommandCfg(CommandTermCfg):
     motion_file: str = MISSING
     anchor_body_name: str = MISSING
     body_names: list[str] = MISSING
+
+    start_frame_mode: Literal["adaptive", "first"] = "adaptive"
+    """Choose an adaptive training start or frame zero on every reset and motion wrap."""
 
     pose_range: dict[str, tuple[float, float]] = {}
     velocity_range: dict[str, tuple[float, float]] = {}

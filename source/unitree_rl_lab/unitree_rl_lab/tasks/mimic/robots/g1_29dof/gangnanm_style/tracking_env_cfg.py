@@ -342,3 +342,12 @@ class RobotPlayEnvCfg(RobotEnvCfg):
         super().__post_init__()
         self.scene.num_envs = 1
         self.episode_length_s = 1e9
+        self.commands.motion.start_frame_mode = "first"
+        self.commands.motion.pose_range = {}
+        self.commands.motion.velocity_range = {}
+        self.commands.motion.joint_position_range = (0.0, 0.0)
+        self.observations.policy.enable_corruption = False
+        self.events.push_robot = None
+        self.events.physics_material = None
+        self.events.base_com = None
+        self.events.add_joint_default_pos = None
