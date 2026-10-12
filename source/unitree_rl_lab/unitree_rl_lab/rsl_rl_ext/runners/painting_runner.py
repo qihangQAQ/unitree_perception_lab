@@ -94,6 +94,7 @@ class PaintingRunner(OnPolicyRunner):
         if "torch_rng_state" in checkpoint:
             torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
         if torch.cuda.is_available() and checkpoint.get("cuda_rng_state") is not None:
-            torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
+            # map_location can move RNG states to CUDA, but generators require CPU ByteTensors.
+            torch.cuda.set_rng_state_all([state.cpu() for state in checkpoint["cuda_rng_state"]])
         self.current_learning_iteration = checkpoint["iter"]
         return checkpoint.get("infos")

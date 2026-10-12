@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 from tensordict import TensorDict
 
@@ -51,19 +52,23 @@ def test_action_mean_and_effective_std_are_bounded_and_projected():
     torch.testing.assert_close(policy.log_std.exp(), policy.effective_action_std)
 
 
-def test_real_ppo_update_trains_both_networks_and_estimator_checkpoint(tmp_path):
-    obs = _observations()
-    policy = _policy(obs)
-    algorithm = PaintingPPO(policy, num_learning_epochs=2, num_mini_batches=2)
+@pytest.mark.parametrize("device", [
+    "cpu",
+    pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")),
+])
+def test_real_ppo_update_trains_both_networks_and_estimator_checkpoint(tmp_path, device):
+    obs = _observations().to(device)
+    policy = _policy(obs).to(device)
+    algorithm = PaintingPPO(policy, device=device, num_learning_epochs=2, num_mini_batches=2)
     algorithm.init_storage("rl", 8, 4, obs, [29])
     before_actor = [p.detach().clone() for p in policy.actor.parameters()]
     before_estimator = [p.detach().clone() for p in policy.estimator.parameters()]
     with torch.no_grad():
         for i in range(4):
             algorithm.act(obs)
-            dones = torch.zeros(8)
+            dones = torch.zeros(8, device=device)
             dones[0] = i == 3
-            algorithm.process_env_step(obs, torch.randn(8), dones, {"time_outs": dones.bool()})
+            algorithm.process_env_step(obs, torch.randn(8, device=device), dones, {"time_outs": dones.bool()})
         algorithm.compute_returns(obs)
     losses = algorithm.update()
     assert all(np.isfinite(v) for v in losses.values())
@@ -74,13 +79,15 @@ def test_real_ppo_update_trains_both_networks_and_estimator_checkpoint(tmp_path)
     assert all(p.grad is None for p in policy.estimator.parameters())
     runner = PaintingRunner.__new__(PaintingRunner)
     runner.alg, runner.current_learning_iteration, runner.logger_type = algorithm, 7, "tensorboard"
-    runner.disable_logs, runner.device = True, "cpu"
+    runner.disable_logs, runner.device = True, device
     checkpoint = tmp_path / "model.pt"
     runner.save(checkpoint, {"test": True})
+    expected_random = torch.rand(8, device=device)
     expected = policy.act_inference(obs).detach().clone()
     with torch.no_grad():
         next(policy.estimator.parameters()).add_(1)
     assert runner.load(checkpoint) == {"test": True}
+    torch.testing.assert_close(torch.rand(8, device=device), expected_random, rtol=0, atol=0)
     torch.testing.assert_close(expected, policy.act_inference(obs))
     assert runner.current_learning_iteration == 7
     assert algorithm.estimator_optimizer.state

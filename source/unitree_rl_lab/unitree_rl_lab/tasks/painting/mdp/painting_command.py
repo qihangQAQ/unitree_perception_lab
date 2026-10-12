@@ -424,7 +424,8 @@ class PaintingCommand(CommandTerm):
             self.visualizer.set_visibility(debug_vis)
 
     def _debug_vis_callback(self, event):
-        if not hasattr(self, "points"):
+        # A pending render callback may run after env.close() has deleted the scene.
+        if not hasattr(self, "points") or not hasattr(self._env, "scene"):
             return
         self.refresh()
         n = min(self.num_envs, 4)
