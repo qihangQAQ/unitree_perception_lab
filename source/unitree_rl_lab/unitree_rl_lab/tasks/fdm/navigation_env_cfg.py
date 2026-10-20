@@ -15,8 +15,9 @@ class NavigationEnvCfg(RobotEnvCfg):
         self.terminations.time_out = None
         self.terminations.navigation_collision = None
         self.episode_length_s = 1e6
-        self.viewer.origin_type = "asset_root"
-        self.viewer.asset_name = "robot"
+        # Keep manual viewport controls free; the navigation CLI frames the
+        # first prepared start once instead of tracking the robot every frame.
+        self.viewer.origin_type = "world"
         self.viewer.env_index = 0
         self.viewer.eye = (5.0, 5.0, 4.0)
         self.viewer.lookat = (0.0, 0.0, 0.0)

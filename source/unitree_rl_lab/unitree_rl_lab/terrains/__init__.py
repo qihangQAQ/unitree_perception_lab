@@ -8,13 +8,16 @@ from .custom_terrain import (
     HfSteppingStonesTerrainCfg,
     HfVariableInvertedPyramidStairsTerrainCfg,
     HfVariablePyramidStairsTerrainCfg,
+    MeshMixedPillarsTerrainCfg,
     cross_stepping_stones_terrain,
+    mixed_pillars_terrain,
     single_gap_terrain,
     stepping_stones_terrain,
 )
 from .terrain_importer import TerrainImporter
 from .terrain_importer_cfg import TerrainImporterCfg
 from .terrain_generator_cfg import (
+    MIXED_PILLARS_TERRAIN,
     UPGRADE_TERRAIN1,
     UPGRADE_TERRAIN2,
     PositiveDiscreteObstaclesTerrainCfg,
@@ -23,6 +26,9 @@ from .terrain_generator_cfg import (
 from .virtual_obstacle import EdgeCylinderCfg, VirtualObstacleBase, VirtualObstacleCfg
 
 __all__ = [
+    "MIXED_PILLARS_TERRAIN",
+    "MeshMixedPillarsTerrainCfg",
+    "mixed_pillars_terrain",
     "EdgeCylinderCfg",
     "HfCrossSteppingStonesTerrainCfg",
     "HfNoisyInvertedPyramidSlopedTerrainCfg",

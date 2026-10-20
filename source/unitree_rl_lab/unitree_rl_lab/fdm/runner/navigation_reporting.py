@@ -39,14 +39,18 @@ class NavigationRecorder:
 def summarize_navigation(trials):
     counts = Counter(t['outcome'] for t in trials)
     reached = [t for t in trials if t['outcome'] == 'reached']
+    ratios = [t['path_length_ratio'] for t in reached if t.get('path_length_ratio') is not None]
     return {'trials':len(trials), 'outcomes':dict(counts),
             'success_rate':counts['reached']/max(1,len(trials)),
             'collision_rate':counts['collision']/max(1,len(trials)),
             'stall_rate':counts['stalled']/max(1,len(trials)),
+            'timeout_rate':counts['timeout']/max(1,len(trials)),
+            'fall_rate':counts['fall']/max(1,len(trials)),
             'initialization_failure_rate':counts['initialization_failed']/max(1,len(trials)),
             'invalid_goal_rate':counts['invalid_goal']/max(1,len(trials)),
             'mean_success_time_s':sum(t['elapsed_s'] for t in reached)/len(reached) if reached else None,
             'mean_success_path_length_m':sum(t['path_length_m'] for t in reached)/len(reached) if reached else None,
+            'mean_success_path_length_ratio':sum(ratios)/len(ratios) if ratios else None,
             'recoveries':sum(t['recoveries'] for t in trials),
             'collision_groups':{name:sum(t['contact_groups'][i] for t in trials)
                                 for i,name in enumerate(('torso','left_hand','right_hand'))}}

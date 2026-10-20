@@ -61,6 +61,57 @@ G1 感知任务使用以下观测：
 | `Unitree-G1-29dof-Mimic-Dance-102` | G1 29 自由度 | Dance-102 全身动作跟踪。 |
 | `Unitree-G1-29dof-Mimic-Gangnanm-Style` | G1 29 自由度 | Gangnam Style 全身动作跟踪。 |
 
+## 混合柱障碍地形预览
+
+`MIXED_PILLARS_TERRAIN` 生成一块 12×12 m 平地，随机混合摆放长方体柱、圆柱和三棱柱各 10 根。
+每根柱高独立在 0.5～1.5 m 内随机采样，朝向也随机。
+圆柱半径随机取 0.15～0.5 m（直径 0.3～1.0 m），长方体截面的长、宽分别随机取 0.3～1.0 m，
+等边三棱柱的截面边长随机取 0.3～0.9 m。
+三类柱子的截面尺寸均偏向较小值采样，减少粗柱；`size_sampling_power=2.0`，调回 1.0 为均匀采样，增大则更偏细。
+下面的预览命令直接读取
+`Unitree-G1-29dof-Velocity-depth` 的 play 配置中的地面材质、天空光照及渲染配置，不按形状着色。
+柱子之间至少间隔 0.8 m，距离场地边缘至少 0.5 m。固定种子可复现同一布局。
+
+```bash
+python scripts/rsl_rl/visualize_terrain.py \
+  --terrain_cfg unitree_rl_lab.terrains.terrain_generator_cfg:MIXED_PILLARS_TERRAIN \
+  --appearance-task Unitree-G1-29dof-Velocity-depth \
+  --num_levels 1 --seed 0 --rendering_mode balanced
+```
+
+`--appearance-task` 只借用外观配置，不加载机器人或策略模型。这里使用与 `play.py` 默认相同的
+`balanced` 渲染模式；`performance` 会改变灯光采样和降噪设置，不适合用来对照训练任务的外观。
+
+场地大小和默认种子在 `terrains/terrain_generator_cfg.py` 的 `MIXED_PILLARS_TERRAIN` 中调整，
+各类数量、尺寸、高度及间距在 `terrains/custom_terrain/mixed_pillars_cfg.py` 中调整。
+换 `--seed` 可生成另一种随机布局。当前仅用于场地预览，几何中心不代表安全机器人出生点。
+
+## 混合柱场地 MPPI + FDM 联合演示
+
+在同一柱子场地中运行一个 G1，加载冻结的 perception-predict 行走策略和 FDM。
+从实际网格选择有 0.75 m 净空的平地起终点，默认相距 5～7 m、直线之间有柱子，
+并通过考虑机器人宽度的连通性检查。这个检查只选择起终点，不给 MPPI 提供路线或全局地图。
+
+```bash
+python scripts/fdm/play_mixed_pillars.py \
+  --checkpoint logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt \
+  --fdm-checkpoint logs/fdm_g1/stage2_mppi_v1/fdm_round_004.pt \
+  --seed 0 --mppi-candidates 256 --rendering_mode balanced
+```
+
+机器人先站稳 2 秒、填满历史观测；底层策略以 50 Hz 执行，MPPI 每 0.5 秒更新速度序列并执行第一段。
+蓝点显示 FDM 大范围扫描，红点显示策略局部扫描；绿色直箭头显示实际下发的线速度，绿色弧箭头显示转向角速度；
+黄色圆环是目标的 0.4 m 到达范围。蓝点保留最近一次规划的采样位置，红点随局部扫描更新。
+材质、灯光沿用 depth 任务，相机可自由操作。
+
+可添加 `--goal X Y` 指定目标，或同时添加 `--start X Y YAW` 指定出生点（世界坐标，偏航角单位为弧度）。
+12×12 m 场地以原点为中心；显式起终点也必须通过净空和连通性检查，不会被自动挪动。
+只指定一端时，另一端仍按默认的距离及绕障要求选择。固定种子可复现地图和初始起终点。
+
+到达后持续执行零速度站立，关闭窗口退出。身体/手碰撞、摔倒、越界、恢复后仍无进展或超时会暂停并保留现场。
+`--timeout` 默认 120 仿真秒；`--stall-time` 默认 15 仿真秒，最多重启 MPPI 候选序列两次。
+脚本不创建输出目录或指标文件，仅在终端提示启动、到达或停止原因。无需 `--output`。
+
 ## Installation
 
 - Install Isaac Lab by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html).

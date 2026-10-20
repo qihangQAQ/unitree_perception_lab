@@ -13,6 +13,7 @@ from _common import configure_safe_spawn, require_input_file, sha256_file
 def parse_args(*, evaluation=False):
     from isaaclab.app import AppLauncher
     from unitree_rl_lab.fdm.config import DEFAULT_TERRAIN_USD
+    from unitree_rl_lab.fdm.benchmarks import SCENE_NAMES, get_scene
 
     parser = argparse.ArgumentParser(description='Frozen forward-only G1 FDM/MPPI local navigation; no global planner.')
     parser.add_argument('--checkpoint', required=True, help='Frozen G1 locomotion policy checkpoint.')
@@ -20,11 +21,14 @@ def parse_args(*, evaluation=False):
         parser.add_argument('--fdm-checkpoints', nargs='+', required=True, help='Compare in order; first is the baseline.')
     else:
         parser.add_argument('--fdm-checkpoint', required=True)
-    parser.add_argument('--terrain-usd', default=str(DEFAULT_TERRAIN_USD))
-    parser.add_argument('--num-envs', type=int, default=8 if evaluation else 1)
-    parser.add_argument('--episodes', type=int, help='Trials per seed for automatic goals (evaluation default 32).')
+    terrain = parser.add_mutually_exclusive_group()
+    terrain.add_argument('--terrain-usd', help='USD terrain (default: the original navigation map).')
+    terrain.add_argument('--scene', choices=SCENE_NAMES,
+                         help='One generated 10x10 m benchmark arena with fixed start and goal.')
+    parser.add_argument('--num-envs', type=int, help='Default: 1 for generated scenes/demo, 8 for USD evaluation.')
+    parser.add_argument('--episodes', type=int, help='Trials per seed (generated scenes default 1; USD evaluation 32).')
     parser.add_argument('--seeds', '--seed', nargs='+', type=int, default=[90042])
-    parser.add_argument('--split', choices=('train','val','test'), default='test' if evaluation else 'val')
+    parser.add_argument('--split', choices=('train','val','test'), help='USD spatial split; not used with --scene.')
     goal = parser.add_mutually_exclusive_group()
     goal.add_argument('--goal', type=float, nargs=2, metavar=('X','Y'), help='Final goal in world coordinates, one env.')
     goal.add_argument('--goal-offset', type=float, nargs=2, metavar=('FORWARD','LEFT'),
@@ -61,6 +65,18 @@ def parse_args(*, evaluation=False):
     args = parser.parse_args()
     args.evaluation = evaluation
     try:
+        if args.scene:
+            if args.split is not None or any(v is not None for v in (args.start,args.goal,args.goal_offset,args.scenarios)):
+                raise ValueError('--scene has fixed start/goal and an independent benchmark split; '
+                                 'omit --split/--start/--goal/--goal-offset/--scenarios.')
+            if args.num_envs not in (None, 1):
+                raise ValueError('--scene requires --num-envs 1; repeat trials with --episodes/--seeds.')
+            args.num_envs, args.split = 1, 'benchmark'
+            get_scene(args.scene).metadata()  # Check clearance, blocked straight path, and reachability before Kit.
+        else:
+            args.num_envs = args.num_envs if args.num_envs is not None else (8 if evaluation else 1)
+            args.split = args.split or ('test' if evaluation else 'val')
+            args.terrain_usd = args.terrain_usd or str(DEFAULT_TERRAIN_USD)
         for name in ('checkpoint','terrain_usd','scenarios'):
             if getattr(args,name):
                 setattr(args,name,require_input_file(getattr(args,name),'--'+name.replace('_','-')))
@@ -127,21 +143,25 @@ def create_environment(args, rollout):
     from unitree_rl_lab.fdm.planning.goals import NavigationGrid
     from unitree_rl_lab.fdm.runner import FrozenRecurrentPolicy
 
-    task = 'Unitree-G1-29dof-FDM-Navigation'
+    task = rollout.task_name
     cfg = parse_env_cfg(task,device=args.device,num_envs=args.num_envs)
     cfg.seed = args.seeds[0]
-    cfg.scene.terrain.usd_path = args.terrain_usd
-    cfg.scene.terrain.active_split = args.split
     cfg.observations.policy.enable_corruption = rollout.policy_observation_corruption
-    configure_safe_spawn(cfg,rollout)
-    cfg.events.reset_base.func.cfg.retain_navigation_grid = True
+    if args.scene:
+        from unitree_rl_lab.tasks.fdm.benchmark_env_cfg import configure_benchmark
+        configure_benchmark(cfg,args.scene)
+    else:
+        cfg.scene.terrain.usd_path = args.terrain_usd
+        cfg.scene.terrain.active_split = args.split
+        configure_safe_spawn(cfg,rollout)
+        cfg.events.reset_base.func.cfg.retain_navigation_grid = True
     env = gym.make(task,cfg=cfg)
     try:
         observations,_ = env.reset(seed=args.seeds[0])
         policy = FrozenRecurrentPolicy(observations,env.unwrapped.action_manager.total_action_dim,
                                        load_cfg_from_registry(task,'rsl_rl_cfg_entry_point'),
                                        args.checkpoint,env.unwrapped.device)
-        grid = NavigationGrid(env.unwrapped.scene.terrain)
+        grid = None if args.scene else NavigationGrid(env.unwrapped.scene.terrain)
         return env,policy,grid
     except BaseException:
         env.close()
@@ -191,6 +211,7 @@ def run_navigation(args, app):
     from unitree_rl_lab.fdm.data.shard_writer import _atomic_json_dump
     from unitree_rl_lab.fdm.training.stage2 import load_initial_model
     from unitree_rl_lab.fdm.utils.se2 import yaw_from_quaternion_xyzw
+    from unitree_rl_lab.fdm.benchmarks import BENCHMARK_TASK, get_scene
 
     def save(path,payload):
         _atomic_json_dump(path,json_safe(payload))
@@ -203,25 +224,37 @@ def run_navigation(args, app):
                                      max_yaw_rate=cfg.yaw_rate)
     mppi_cfg = MPPICfg(candidates=args.mppi_candidates,iterations=args.mppi_iterations,
                        inference_chunk=args.inference_chunk,high_risk_threshold=args.risk_threshold,noise_std=(.45,0.,.65))
-    rollout = RolloutCfg(task_name='Unitree-G1-29dof-FDM-Navigation',policy_checkpoint=args.checkpoint,
-                         terrain_usd_path=args.terrain_usd,num_envs=args.num_envs,seed=args.seeds[0],split=args.split,
+    benchmark = get_scene(args.scene) if args.scene else None
+    benchmark_info = benchmark.metadata() if benchmark else None
+    rollout = RolloutCfg(task_name=BENCHMARK_TASK if benchmark else 'Unitree-G1-29dof-FDM-Navigation',
+                         policy_checkpoint=args.checkpoint,
+                         terrain_usd_path=args.terrain_usd or '',num_envs=args.num_envs,seed=args.seeds[0],split=args.split,
                          command=command_cfg,policy_observation_corruption=not args.disable_policy_corruption)
-    terrain_hash = sha256_file(args.terrain_usd)
+    rollout.validate()
+    terrain_hash = sha256_file(args.terrain_usd) if args.terrain_usd else None
     payload = read_scenarios(args.scenarios) if args.scenarios else None
     if payload and (payload.get('terrain_sha256',terrain_hash) != terrain_hash or payload.get('split',args.split) != args.split):
         raise ValueError('Scenario terrain/split differs from this run.')
     rows = payload['scenarios'] if payload else None
-    count = len(rows) if rows else args.episodes or (32 if args.evaluation else args.num_envs)
+    count = len(rows) if rows else args.episodes or (32 if args.evaluation and not benchmark else args.num_envs)
     output = Path(args.output)
     output.mkdir(parents=True,exist_ok=False)
     save(output/'config.json',{'version':1,'planner':'local_fdm_mppi','global_planner':None,
          'args':vars(args),'navigation':asdict(cfg),'mppi':asdict(mppi_cfg),'rollout':rollout.as_dict(),
+         'benchmark':benchmark_info,
          'terrain_sha256':terrain_hash,'policy_sha256':sha256_file(args.checkpoint),
          'checkpoints':[{'path':p,'sha256':sha256_file(p)} for p in args.fdm_checkpoints]})
-    env,policy,grid = create_environment(args,rollout)
+    if benchmark:
+        save(output/'scene.json',benchmark_info)
+        print(f'[FDM] Generated scene={benchmark.name}, size={benchmark.size}m, '
+              f'start={benchmark.start}, goal={benchmark.goal}, '
+              f'direct_path_blocked={benchmark_info["direct_path_blocked"]}.',flush=True)
+    env = None
+    camera_initialized = bool(benchmark)  # Generated task already frames the complete arena at startup.
     reports = []
     all_trials = []
     try:
+        env,policy,grid = create_environment(args,rollout)
         for model_index,checkpoint in enumerate(args.fdm_checkpoints):
             model,_ = load_initial_model(checkpoint)
             model = model.to(env.unwrapped.device).eval().requires_grad_(False)
@@ -242,8 +275,21 @@ def run_navigation(args, app):
                     batch_seed = seed + offset
 
                     def goals(raw):
+                        nonlocal camera_initialized
+                        camera = env.unwrapped.viewport_camera_controller
+                        if camera is not None and not camera_initialized:
+                            # Frame the actual start (including --start/scenarios)
+                            # once, then preserve the user's manual camera view.
+                            viewer = env.unwrapped.cfg.viewer
+                            origin = raw[viewer.env_index,:3].cpu().tolist()
+                            camera.update_view_location(
+                                eye=[p+d for p,d in zip(origin,viewer.eye)],
+                                lookat=[p+d for p,d in zip(origin,viewer.lookat)])
+                            camera_initialized = True
                         sampled_valid = torch.ones(args.num_envs,dtype=torch.bool,device=raw.device)
-                        if rows:
+                        if benchmark:
+                            values = torch.tensor([benchmark.goal],device=raw.device)
+                        elif rows:
                             values = torch.tensor([r['goal'] for r in batch_rows],device=raw.device)
                         elif args.goal is not None:
                             values = torch.tensor([args.goal],device=raw.device)
@@ -259,8 +305,11 @@ def run_navigation(args, app):
                             sampler.update(torch.arange(args.num_envs,device=raw.device),raw,0.)
                             values = sampler.goal
                             sampled_valid = sampler.active
-                        anchor = grid.lookup(raw[:,:2])
-                        valid = sampled_valid & (anchor > 0) & (grid.lookup(values) == anchor)
+                        if benchmark:
+                            valid = benchmark.free(raw[:,:2]) & benchmark.free(values)
+                        else:
+                            anchor = grid.lookup(raw[:,:2])
+                            valid = sampled_valid & (anchor > 0) & (grid.lookup(values) == anchor)
                         valid[size:] = False
                         return values,valid
 
@@ -268,12 +317,26 @@ def run_navigation(args, app):
                     visualizer = NavigationVisualizer(args.num_envs) if not args.headless and not args.disable_draw else None
                     try:
                         runner = NavigationRunner(env,policy,planner,rollout,cfg,record=recorder,visualize=visualizer,
-                                                  running=app.is_running)
+                                                  running=app.is_running,
+                                                  region_contains=benchmark.contains if benchmark else None)
                         result = runner.run(seed=batch_seed,goal_factory=goals,start_setter=setter,
                                             trial_ids=list(range(offset,offset+args.num_envs)))
                         result['trials'] = result['trials'][:size]
                         for t in result['trials']:
                             t['batch_seed'] = t['seed']; t['seed'] = seed
+                            if benchmark:
+                                t['scene'] = benchmark.name
+                                t['reference_path_length_m'] = None
+                                t['path_length_ratio'] = None
+                                if t['outcome'] not in ('initialization_failed','invalid_goal'):
+                                    try:
+                                        _, length = benchmark.reference_path(t['start'])
+                                    except ValueError:
+                                        pass  # Record the failure without inventing a valid reference route.
+                                    else:
+                                        t['reference_path_length_m'] = length
+                                        if t['outcome'] == 'reached':
+                                            t['path_length_ratio'] = t['path_length_m']/length
                         trials.extend(result['trials'])
                         batches.append({k:v for k,v in result.items() if k != 'trials'})
                         save(recorder.directory/'result.json',result)
@@ -290,13 +353,14 @@ def run_navigation(args, app):
             reports.append({k:v for k,v in report.items() if k != 'trials'})
             all_trials.append(trials)
             del runner,planner,model
-        save(output/'summary.json',{'status':'completed','models':reports})
+        save(output/'summary.json',{'status':'completed','benchmark':benchmark_info,'models':reports})
         print(f'[FDM] Navigation complete: {output / "summary.json"}',flush=True)
     except BaseException as exc:
         save(output/'failure.json',{'status':'failed','type':type(exc).__name__,'message':str(exc)})
         raise
     finally:
-        env.close()
+        if env is not None:
+            env.close()
 
 
 def main(*, evaluation=False):

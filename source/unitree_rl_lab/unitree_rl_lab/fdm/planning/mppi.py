@@ -56,7 +56,7 @@ class MPPIPlanner:
 
     def __init__(self, model, num_envs, *, cfg=None, command_cfg=None, seed=42,
                  forward_only=False, turn_candidates=False, independent_rng=False,
-                 record_predictions=False):
+                 record_predictions=False, track_statistics=True):
         self.cfg = cfg or MPPICfg()
         self.cfg.validate()
         command_cfg = command_cfg or CommandSamplingCfg()
@@ -64,6 +64,7 @@ class MPPIPlanner:
         self.forward_only = forward_only
         self.turn_candidates = turn_candidates
         self.record_predictions = record_predictions
+        self.track_statistics = track_statistics
         if forward_only and (command_cfg.min_forward_speed != 0
                              or command_cfg.min_lateral_speed != 0 or command_cfg.max_lateral_speed != 0):
             raise ValueError("Forward-only planning requires vx >= 0 (including stop) and vy == 0.")
@@ -172,9 +173,9 @@ class MPPIPlanner:
         if self.model.training:
             raise RuntimeError("Planning requires an immutable eval-mode FDM snapshot.")
         # Synchronize once per decision batch for useful timing, not per candidate.
-        if self.device.type == "cuda":
+        if self.track_statistics and self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
-        started = time.monotonic()
+        started = time.monotonic() if self.track_statistics else None
         context = self.model.encode_context(state, proprio, height.float())
         batch, population = len(ids), self.cfg.candidates
         nominal = torch.zeros(batch, self.horizon, 3, device=self.device)
@@ -232,22 +233,25 @@ class MPPIPlanner:
             fallback = ~torch.isfinite(mean_cost) | (mean_cost > best_cost) | unsafe_mean
             mean = torch.where(fallback[:, None, None], best, proposal)
             mean[last_invalid] = 0
-            self.fallbacks += int((fallback & ~last_invalid).sum())
+            if self.track_statistics:
+                self.fallbacks += int((fallback & ~last_invalid).sum())
         self.mean[ids] = mean
         self.previous[ids] = mean[:, 0]
         self.initialized[ids] = True
-        self.all_invalid += int(last_invalid.sum())
+        if self.track_statistics:
+            self.all_invalid += int(last_invalid.sum())
         self.last_invalid[ids] = last_invalid
         if self.record_predictions:
             # Reuse encoded observations; save only the selected trajectory.
             selected = self.model.predict_from_context(context, mean)
             self.last_pose[ids] = selected["future_pose"]
             self.last_risk[ids] = selected["collision_logits"].sigmoid().amax(dim=1)
-        self.decisions += batch
-        self.calls += 1
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
-        elapsed = time.monotonic() - started
-        self.seconds += elapsed
-        self.latencies.append(elapsed)
+        if self.track_statistics:
+            self.decisions += batch
+            self.calls += 1
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            elapsed = time.monotonic() - started
+            self.seconds += elapsed
+            self.latencies.append(elapsed)
         return mean

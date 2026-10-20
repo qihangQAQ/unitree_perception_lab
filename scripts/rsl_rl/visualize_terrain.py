@@ -10,6 +10,11 @@ Examples:
     python scripts/rsl_rl/visualize_terrain.py \
         --terrain_cfg unitree_rl_lab.terrains.terrain_generator_cfg:UPGRADE_TERRAIN1
 
+    # Preview a standalone terrain with the depth play task's material and lighting.
+    python scripts/rsl_rl/visualize_terrain.py \
+        --terrain_cfg unitree_rl_lab.terrains.terrain_generator_cfg:MIXED_PILLARS_TERRAIN \
+        --appearance-task Unitree-G1-29dof-Velocity-depth --rendering_mode balanced
+
     # Load the terrain and reset ranges from a registered training task.
     python scripts/rsl_rl/visualize_terrain.py \
         --task Unitree-G1-29dof-Velocity-perception-pro
@@ -41,6 +46,15 @@ source_group.add_argument(
     "--task",
     type=str,
     help="Registered Gym task whose terrain and reset configuration should be visualized.",
+)
+parser.add_argument(
+    "--appearance-task",
+    type=str,
+    default=None,
+    help=(
+        "With --terrain_cfg, copy the ground material, sky light and render configuration from "
+        "this task's registered play CFG. Does not load a robot or checkpoint."
+    ),
 )
 parser.add_argument(
     "--num_levels",
@@ -92,6 +106,8 @@ if args_cli.terrain_cfg is not None and args_cli.use_play_cfg:
     parser.error("--use_play_cfg can only be used together with --task.")
 if args_cli.terrain_cfg is not None and args_cli.reset_event is not None:
     parser.error("--reset_event can only be used together with --task.")
+if args_cli.appearance_task is not None and args_cli.terrain_cfg is None:
+    parser.error("--appearance-task can only be used together with --terrain_cfg.")
 if args_cli.num_levels is not None and args_cli.num_levels <= 0:
     parser.error("--num_levels must be greater than zero.")
 
@@ -113,6 +129,7 @@ import torch
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.sim import SimulationCfg, SimulationContext
 from isaaclab.terrains import TerrainGenerator
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 
 import unitree_rl_lab.tasks  # noqa: F401
@@ -292,9 +309,11 @@ def _load_direct_cfg_source():
             static_friction=1.0,
             dynamic_friction=1.0,
         ),
-        visual_material=sim_utils.PreviewSurfaceCfg(
-            diffuse_color=(0.32, 0.34, 0.38),
-            roughness=0.85,
+        # Match the ground material used by the project's G1 walking tasks.
+        visual_material=sim_utils.MdlFileCfg(
+            mdl_path=f"{ISAACLAB_NUCLEUS_DIR}/Materials/TilesMarbleSpiderWhiteBrickBondHoned/TilesMarbleSpiderWhiteBrickBondHoned.mdl",
+            project_uvw=True,
+            texture_scale=(0.25, 0.25),
         ),
         debug_vis=False,
     )
@@ -731,10 +750,28 @@ def main() -> None:
     else:
         terrain_importer_cfg, reset_info, source_label = _load_direct_cfg_source()
 
+    # Use the same registered play CFG as play.py instead of approximating its appearance.
+    appearance_cfg = None
+    if args_cli.appearance_task is not None:
+        appearance_cfg = load_cfg_from_registry(
+            args_cli.appearance_task.split(":")[-1], "play_env_cfg_entry_point"
+        )
+        terrain_importer_cfg.visual_material = copy.deepcopy(
+            appearance_cfg.scene.terrain.visual_material
+        )
+
     terrain_names, difficulties = _configure_grid(terrain_importer_cfg)
     generator_cfg = terrain_importer_cfg.terrain_generator
 
-    sim = SimulationContext(SimulationCfg(dt=0.01, device=args_cli.device))
+    sim_cfg = SimulationCfg(dt=0.01, device=args_cli.device)
+    if appearance_cfg is not None:
+        sim_cfg.render = copy.deepcopy(appearance_cfg.sim.render)
+        rendering_mode = args_cli.rendering_mode or sim_cfg.render.rendering_mode or "balanced"
+        print(
+            f"[INFO] Appearance: {args_cli.appearance_task} (play CFG); "
+            f"rendering_mode={rendering_mode}."
+        )
+    sim = SimulationContext(sim_cfg)
     total_length = generator_cfg.num_rows * generator_cfg.size[0]
     total_width = generator_cfg.num_cols * generator_cfg.size[1]
     view_scale = max(total_length, total_width, 10.0)
@@ -743,8 +780,20 @@ def main() -> None:
         target=(0.0, 0.0, 0.0),
     )
 
-    light_cfg = sim_utils.DomeLightCfg(intensity=3000.0, color=(0.85, 0.85, 0.85))
-    light_cfg.func("/World/SkyLight", light_cfg)
+    if appearance_cfg is not None:
+        sky_light = copy.deepcopy(appearance_cfg.scene.sky_light)
+        sky_light.spawn.func(
+            sky_light.prim_path,
+            sky_light.spawn,
+            translation=sky_light.init_state.pos,
+            orientation=sky_light.init_state.rot,
+        )
+    else:
+        light_cfg = sim_utils.DomeLightCfg(
+            intensity=750.0,
+            texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
+        )
+        light_cfg.func("/World/SkyLight", light_cfg)
 
     terrain_importer = terrain_importer_cfg.class_type(terrain_importer_cfg)
 

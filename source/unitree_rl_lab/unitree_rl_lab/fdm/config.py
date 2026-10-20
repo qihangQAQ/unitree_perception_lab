@@ -119,8 +119,12 @@ class RolloutCfg:
 
     def validate(self) -> None:
         self.command.validate()
-        if self.split not in ("train", "val", "test"):
+        if self.split not in ("train", "val", "test", "benchmark"):
             raise ValueError(f"Unknown split {self.split!r}.")
+        if self.split == "benchmark" and (
+            self.task_name != "Unitree-G1-29dof-FDM-Benchmark" or self.num_envs != 1 or self.terrain_usd_path
+        ):
+            raise ValueError("Benchmark split requires the single-environment generated task without a USD path.")
         if self.num_envs < 1:
             raise ValueError("num_envs must be positive.")
         if self.history_length < 1 or self.prediction_horizon < 1:

@@ -16,6 +16,20 @@ from .custom_terrain import (
     HfSingleGapTerrainCfg,
     HfVariableInvertedPyramidStairsTerrainCfg,
     HfVariablePyramidStairsTerrainCfg,
+    MeshMixedPillarsTerrainCfg,
+)
+
+
+MIXED_PILLARS_TERRAIN = terrain_gen.TerrainGeneratorCfg(
+    seed=0,
+    size=(12.0, 12.0),
+    num_rows=1,
+    num_cols=1,
+    border_width=0.0,
+    curriculum=False,
+    use_cache=False,
+    color_scheme="none",
+    sub_terrains={"mixed_pillars": MeshMixedPillarsTerrainCfg(proportion=1.0)},
 )
 
 

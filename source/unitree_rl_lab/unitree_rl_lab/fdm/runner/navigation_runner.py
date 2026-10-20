@@ -12,7 +12,8 @@ from .navigation_observation import NavigationObservation
 
 
 class NavigationRunner:
-    def __init__(self, env, policy, planner, rollout_cfg, cfg=None, *, record=None, visualize=None, running=None):
+    def __init__(self, env, policy, planner, rollout_cfg, cfg=None, *, record=None, visualize=None, running=None,
+                 region_contains=None):
         self.env = env.unwrapped
         self.policy, self.planner = policy, planner
         self.rollout, self.cfg = rollout_cfg, cfg or NavigationCfg()
@@ -31,6 +32,9 @@ class NavigationRunner:
         self.record = record or (lambda record: None)
         self.visualize = visualize
         self.running = running or (lambda: True)
+        self.region_contains = region_contains
+        if self.rollout.split == 'benchmark' and region_contains is None:
+            raise ValueError("Generated benchmarks require an explicit arena boundary.")
 
     def _step(self, obs, commands):
         if not torch.isfinite(commands).all() or (commands[:, 0] < 0).any() or (commands[:, 1] != 0).any():
@@ -186,11 +190,15 @@ class NavigationRunner:
             fallen = self.adapter.robot.data.projected_gravity_b[:, 2] > -.5
             finish(fallen, 'fall', step * dt)
             # This boundary is evaluation bookkeeping, not a navigation map input.
-            from ..planning.goals import SpatialSplit
-            if not hasattr(self, '_spatial'):
-                self._spatial = SpatialSplit(self.env.scene.terrain)
-            split_id = {'train':0, 'val':1, 'test':2}[self.rollout.split]
-            finish(self._spatial.lookup(raw[:, :2]) != split_id, 'out_of_region', step * dt)
+            if self.region_contains is not None:
+                inside = self.region_contains(raw[:, :2])
+            else:
+                from ..planning.goals import SpatialSplit
+                if not hasattr(self, '_spatial'):
+                    self._spatial = SpatialSplit(self.env.scene.terrain)
+                split_id = {'train':0, 'val':1, 'test':2}[self.rollout.split]
+                inside = self._spatial.lookup(raw[:, :2]) == split_id
+            finish(~inside, 'out_of_region', step * dt)
             self.adapter.tick(self.ids[active], raw, obs, start_time + step * dt)
             wall = time.monotonic()
             if self.cfg.log_interval_s and wall - last_log >= self.cfg.log_interval_s:

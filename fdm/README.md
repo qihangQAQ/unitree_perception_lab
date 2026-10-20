@@ -188,6 +188,88 @@ manifest 同时记录策略和 USD 的 SHA-256、空间 split、body/joint 顺�
 
 安全出生采用“地图预分析 + 落地后二次检查”：第一次 reset 时按原 FDM 的 `TerrainAnalysisRootReset` 逻辑构建 5 cm 高度图，过滤墙内点、门洞顶面和距离墙小于 0.7 m 的点，并按 G1 的 0.6 m 占地范围计算安全出生高度。候选点始终属于当前 train/val/test 空间 split。collector 随后等待机器人落地，只有双脚接触、重力方向直立、root 高度有效且 navigation link 无碰撞时才开始 warmup；失败候选不写入数据并重新采样。
 
+## 仅预览参考 FDM 场地
+
+```bash
+python scripts/fdm/view_terrain.py --rendering_mode performance
+```
+
+这个独立窗口展示参考 FDM 的 `PLANNER_EVAL_2D_CFG.box_cross_pattern`：10×10 m 平地，
+中心及四个斜角共 5 个箱体。默认难度 0.5、随机种子 0，箱体宽 0.75 m，高度在 0.5～1.5 m
+范围内按种子固定。绿点是原参考起点 `(-2.5, 0)`，红点是其前方 4 m 的目标 `(1.5, 0)`。
+视角可以自由移动；加 `--top-view` 从俯视开始，关闭窗口即可结束。
+预览只加载场地与标记，不创建机器人、不加载 checkpoint，也不运行规划或物理仿真。
+它尚未加入导航脚本的 `--scene` 选项，待场地确认后再接入。
+
+布局来源为参考仓库 `nav-suite/.../terrains/single_object.py` 的 `cross_object_pattern`，
+尺寸范围来自 `exts/fdm/fdm/env_cfg/terrain_cfg.py` 的 `box_cross_pattern`。
+移植时将坐标原点移至场地中心，并将随机高度固定为局部随机种子；许可见
+`fdm/licenses/nav-suite-Apache-2.0.txt`。
+
+如果启动出现 `CXXABI_1.3.15 not found`，在激活 `unitree-lab` 后可仅为本次进程指定 Conda 的 C++ 库：
+
+```bash
+LD_PRELOAD="$CONDA_PREFIX/lib/libstdc++.so.6${LD_PRELOAD:+:$LD_PRELOAD}" \
+  python scripts/fdm/view_terrain.py --rendering_mode performance
+```
+
+## 小场景导航与避障验证
+
+`navigate_fdm.py --scene empty|box|wall` 使用运行时生成的三角网格地形，每次只创建一个
+10×10 m 场地和一个 G1，无需加载大型 USD，也不执行它的全图出生点分析。两个模型均冻结，
+继续使用原来的高程图、本体观测、FDM + MPPI 和步态策略；命令仍限制为前进与转向（`vx >= 0, vy = 0`）。
+
+| 场景 | 布局 | 验证目的 |
+| --- | --- | --- |
+| `empty` | 平地 | 基础到达、停车与速度基线 |
+| `box` | 中央 1×1×1.5 m 箱体 | 从障碍一侧绕行 |
+| `wall` | 中央 0.2×2×1.5 m 短墙 | 绕过墙端并继续接近目标 |
+
+起点为 `(-2.5, 0)`、朝向 `+x`，目标为 `(2.5, 0)`，地面顶面 `z=0`。初始化期间允许机器人
+自然落地稳定，因此日志中的实际起始位置会有少量偏移。相机从斜上方框住起点、障碍和目标，
+之后保持自由控制；绿色为实际路径、青色为选中计划的预测路径、红色叉号为目标。
+
+```bash
+python -u scripts/fdm/navigate_fdm.py \
+  --checkpoint logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt \
+  --fdm-checkpoint logs/fdm_g1/stage2_mppi_v1/fdm_round_004.pt \
+  --scene box \
+  --mppi-candidates 256 \
+  --timeout 120
+```
+
+换 `--scene empty` 或 `--scene wall` 即切换场景；加 `--headless` 可无窗口运行。
+默认只运行一次，`--episodes 3 --seeds 90042 90043` 会对同一布局依次运行 6 次。
+随机种子改变策略观测噪声、采样等随机过程，场景几何与名义起终点保持固定。
+未指定 `--output` 时，每次自动创建 `logs/fdm_g1/stage3_navigation/<时间戳>/`。
+
+生成场景是独立的 `benchmark` 评测集，不能同时传 `--terrain-usd`、`--split`、`--start`、
+`--goal`、`--goal-offset` 或 `--scenarios`，也不支持 `--num-envs > 1`。
+省略 `--scene` 时保留原来的 USD 导航方式和空间切分。
+
+场景会在启动仿真前检查：起终点有至少 0.4 m 的平面保守余量，箱体/短墙挡住起终点直线，
+且存在绕行路线。这条基于膨胀障碍的平面参考路线只用于场景预检和距离统计，**不提供给 MPPI**。
+这是局部导航评测，并没有添加全局路点规划器，也不保证已有模型一定能通过障碍场景。
+
+输出延续 `config.json`、轨迹/事件 JSONL、`result.json` 和 `summary.json`，另有：
+
+- `scene.json`：完整几何尺寸、起终点、余量、场景定义 SHA256、直线是否受阻、参考路线与长度。
+- `result.json`：每次任务增加 `scene`、从实际初始化位置计算的 `reference_path_length_m`，以及
+  成功任务的 `path_length_ratio`（实际距离 / 平面参考距离）。失败或无有效参考路线时比例为 `null`。
+- `summary.json`：成功、碰撞、停滞、跌倒、超时等结果，成功任务平均路径比例，以及原有规划延迟、实时率。
+
+路径比例不是严格的动力学最优性指标：参考采用 0.4 m 的保守障碍扩张，实际到达判定有半径容差，
+所以比例小于 1 也可能发生。初始化失败和无效目标单独计数。更换 checkpoint 时应使用相同场景与种子。
+
+多个模型可以在同一场景中依次比较（该入口在 `--scene` 模式也默认 1 个环境、每个种子 1 次任务）：
+
+```bash
+python -u scripts/fdm/evaluate_fdm_navigation.py \
+  --checkpoint logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt \
+  --fdm-checkpoints logs/fdm_g1/stage2_mppi_v1/fdm_round_004.pt logs/fdm_g1/stage2_mppi_v1/fdm_round_009.pt \
+  --scene box --seeds 90042 90043 90044 --headless
+```
+
 ## 测试
 
 ```bash
