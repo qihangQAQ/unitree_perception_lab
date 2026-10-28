@@ -1,4 +1,4 @@
-"""Visual-only, single-robot MPPI + FDM demo on the mixed-pillar terrain."""
+"""Visual-only MPPI + FDM demo on the atlas (legacy script name retained)."""
 
 from __future__ import annotations
 
@@ -8,23 +8,33 @@ import math
 from _common import require_input_file
 
 
-TASK = "Unitree-G1-29dof-FDM-Mixed-Pillars"
+TASK = "Unitree-G1-29dof-FDM-Atlas"
 
 
-def parse_args():
+def parse_args(*, interactive=False):
     from isaaclab.app import AppLauncher
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=(
+        "Interactive FDM navigation: reach a random nearby goal, then press SPACE for the next." if interactive else __doc__
+    ))
     parser.add_argument("--checkpoint", default=(
         "logs/rsl_rl/Unitree-Velocity_perception/2026-08-30_12-12-16_perception-predict/model_23500.pt"
     ))
     parser.add_argument("--fdm-checkpoint", default="logs/fdm_g1/stage2_mppi_v1/fdm_round_004.pt")
     parser.add_argument("--seed", type=int, default=0, help="Terrain and planner seed; matches the terrain preview.")
     parser.add_argument("--num-envs", type=int, choices=(1,), default=1)
+    parser.add_argument("--zone", choices=[f"{row}{col}" for row in "ABC" for col in range(1, 5)],
+                        help=("Initial flat-spawn zone; defaults to B1. Subsequent goals may cross zones." if interactive
+                              else "Atlas endpoint preset. Default B1, or the zone containing an explicit goal/start."))
     parser.add_argument("--start", type=float, nargs=3, metavar=("X", "Y", "YAW"),
-                        help="Optional world start; yaw is in radians. Must have flat clearance.")
-    parser.add_argument("--goal", type=float, nargs=2, metavar=("X", "Y"),
-                        help="Optional world goal. Default: connected empty ground 5–7 m from the start.")
+                        help="World start; yaw in radians. Needs a level standing patch; ground Z is sampled.")
+    if interactive:
+        parser.add_argument("--goal-radius", type=float, default=5.0, help="Maximum XY sampling distance in metres.")
+        parser.add_argument("--goal-min-distance", type=float, default=2.0, help="Minimum XY sampling distance in metres.")
+        parser.set_defaults(goal=None)
+    else:
+        parser.add_argument("--goal", type=float, nargs=2, metavar=("X", "Y"),
+                            help="World goal on flat ground, a platform or a gentle ramp. Defaults to the zone preset.")
     parser.add_argument("--mppi-candidates", type=int, default=256)
     parser.add_argument("--mppi-iterations", type=int, default=1)
     parser.add_argument("--inference-chunk", type=int, default=2048)
@@ -49,6 +59,12 @@ def parse_args():
                 raise ValueError(f"--{name.replace('_', '-')} must be finite and positive.")
         if args.max_forward_speed > 1.2 or args.max_yaw_rate > 1.0:
             raise ValueError("Model command bounds require vx <= 1.2 m/s and |wz| <= 1 rad/s.")
+        if interactive:
+            if args.headless:
+                raise ValueError("Interactive goals require a GUI window; omit --headless.")
+            if not (math.isfinite(args.goal_radius) and math.isfinite(args.goal_min_distance)
+                    and 0.4 < args.goal_min_distance < args.goal_radius):
+                raise ValueError("Require 0.4 < --goal-min-distance < --goal-radius, both finite.")
     except ValueError as exc:
         parser.error(str(exc))
     return args
@@ -75,6 +91,9 @@ def run_demo(env, app, args, policy, planner, rollout, navigation, visualizer, o
     step, navigation_step, stable = 0, 0, 0
     initialized = False
     phase, progress = "settling", None
+    print(f"[Demo] FDM atlas 48 x 36 m; zone {env.scene.terrain.demo_scene.selected_zone}; "
+          f"start ground Z={env.scene.terrain.demo_start_height:.3f} m, "
+          f"goal ground Z={env.scene.terrain.demo_goal_height:.3f} m.", flush=True)
     print(f"[Demo] Start {env.scene.terrain.demo_start}; goal {env.scene.terrain.demo_goal}.", flush=True)
     print("[Demo] Standing for 2 s to initialize FDM history. Blue: FDM scan; red: policy scan; "
           "green: executed command; yellow: goal. Camera is free.", flush=True)
@@ -171,7 +190,7 @@ def run_demo(env, app, args, policy, planner, rollout, navigation, visualizer, o
             return stop("Policy returned non-finite actions")
         observations, _, terminated, truncated, _ = env.step(actions)
         if bool((terminated | truncated).any()):
-            raise RuntimeError("Unexpected automatic reset in the pillar demo.")
+            raise RuntimeError("Unexpected automatic reset in the atlas demo.")
         step += 1
         collision, _, feet = adapter.contacts()
         raw = adapter.raw(collision)
@@ -183,7 +202,7 @@ def run_demo(env, app, args, policy, planner, rollout, navigation, visualizer, o
     return None
 
 
-def main(args, app):
+def main(args, app, *, interactive=False):
     import gymnasium as gym
     import torch
     import isaaclab_tasks  # noqa: F401
@@ -218,17 +237,34 @@ def main(args, app):
     cfg = parse_env_cfg(TASK, device=args.device, num_envs=1)
     cfg.seed = args.seed
     cfg.scene.terrain.terrain_generator.seed = args.seed
+    cfg.scene.terrain.demo_zone = args.zone
+    cfg.scene.terrain.demo_spawn_only = interactive
     cfg.scene.terrain.demo_start = None if args.start is None else tuple(args.start)
     cfg.scene.terrain.demo_goal = None if args.goal is None else tuple(args.goal)
-    wrapped, visualizer = None, None
+    wrapped, visualizer, controls = None, None, None
     try:
         wrapped = gym.make(TASK, cfg=cfg)
         env = wrapped.unwrapped
+        if interactive and abs(env.scene.terrain.demo_start_height) > 0.015:
+            raise ValueError("Interactive mode must initially spawn on the flat z=0 floor; choose another --start.")
         if env.termination_manager.active_terms:
             raise ValueError("The demo must not automatically reset after a collision or timeout.")
         if abs(env.step_dt - rollout.policy_dt) > 1e-8 or abs(cfg.sim.dt - rollout.physics_dt) > 1e-8:
             raise ValueError("Simulation timing differs from FDM training.")
         observations, _ = env.reset(seed=args.seed)
+        if not args.headless:
+            # Frame the selected experiment once; leave manual camera control free.
+            sx, sy, _ = env.scene.terrain.demo_start
+            gx, gy = (sx, sy) if interactive else env.scene.terrain.demo_goal
+            cx, cy = (sx + gx) / 2, (sy + gy) / 2
+            span = max(8.0, math.hypot(gx - sx, gy - sy))
+            ground_z = env.scene.terrain.demo_start_height
+            if not interactive:
+                ground_z = max(ground_z, env.scene.terrain.demo_goal_height)
+            env.sim.set_camera_view(
+                eye=(cx + 0.7 * span, cy - 0.9 * span, ground_z + 0.85 * span),
+                target=(cx, cy, ground_z + 0.4),
+            )
         policy = FrozenRecurrentPolicy(
             observations, env.action_manager.total_action_dim, load_cfg_from_registry(TASK, "rsl_rl_cfg_entry_point"),
             args.checkpoint, env.device,
@@ -242,14 +278,28 @@ def main(args, app):
         )
         if not args.headless:
             from unitree_rl_lab.fdm.runner.pillar_visualizer import PillarDemoVisualizer
-            visualizer = PillarDemoVisualizer(env, env.scene.terrain.demo_goal, navigation.arrival_radius)
+            visualizer = PillarDemoVisualizer(
+                env, env.scene.terrain.demo_goal, navigation.arrival_radius,
+                goal_height_at=env.scene.terrain.demo_scene.height_at,
+            )
+        if interactive:
+            from unitree_rl_lab.fdm.runner.interactive_controls import InteractiveControls
+            from unitree_rl_lab.fdm.runner.interactive_demo import run_interactive
+            controls = InteractiveControls()
         with torch.inference_mode():
-            stopped = run_demo(env, app, args, policy, planner, rollout, navigation, visualizer, observations)
+            if interactive:
+                stopped = run_interactive(
+                    env, app, args, policy, planner, rollout, navigation, visualizer, observations, controls
+                )
+            else:
+                stopped = run_demo(env, app, args, policy, planner, rollout, navigation, visualizer, observations)
         if stopped and app.is_running() and not args.headless:
             env.sim.pause()
             while app.is_running():
                 env.sim.render()
     finally:
+        if controls is not None:
+            controls.close()
         if visualizer is not None:
             visualizer.close()
         if wrapped is not None:

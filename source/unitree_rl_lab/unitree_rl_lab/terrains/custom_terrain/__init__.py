@@ -6,6 +6,7 @@ from .cross_stepping_stones import (
 )
 from .mixed_pillars import mixed_pillars_terrain
 from .mixed_pillars_cfg import MeshMixedPillarsTerrainCfg
+from .fdm_atlas_cfg import MeshFDMAtlasTerrainCfg
 from .noisy_pyramid_slope import (
     HfNoisyInvertedPyramidSlopedTerrainCfg,
     HfNoisyPyramidSlopedTerrainCfg,
@@ -20,6 +21,7 @@ from .single_gap import HfSingleGapTerrainCfg, single_gap_terrain
 from .stepping_stones import HfSteppingStonesTerrainCfg, stepping_stones_terrain
 
 __all__ = [
+    "MeshFDMAtlasTerrainCfg",
     "MeshMixedPillarsTerrainCfg",
     "mixed_pillars_terrain",
     "HfCrossSteppingStonesTerrainCfg",

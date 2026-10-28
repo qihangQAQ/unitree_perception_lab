@@ -1,4 +1,4 @@
-"""Live scan points and the command actually executed by the pillar demo."""
+"""Live scan points, executed commands and terrain-aligned demo goal markers."""
 
 import math
 
@@ -13,7 +13,7 @@ from ..utils.se2 import yaw_from_quaternion_xyzw
 
 
 class PillarDemoVisualizer:
-    def __init__(self, env, goal, arrival_radius):
+    def __init__(self, env, goal, arrival_radius, *, goal_height_at=None):
         self.env, self.robot = env, env.scene["robot"]
         self.goal, self.arrival_radius = goal, arrival_radius
         self.draw = _debug_draw.acquire_debug_draw_interface()
@@ -25,6 +25,24 @@ class PillarDemoVisualizer:
         self.arrow.set_visibility(False)
         self.blue.set_visibility(False)
         self.red.set_visibility(False)
+        self.goal_height_at = goal_height_at
+        self.set_goal(goal)
+
+    def set_goal(self, goal):
+        self.goal = goal
+        self.goal_segments = ([] if goal is None else
+                              self._goal_segments(goal, self.arrival_radius, self.goal_height_at))
+
+    @staticmethod
+    def _goal_segments(goal, radius, height_at=None):
+        # Recompute only when the goal changes; the terrain is static.
+        gx, gy = goal
+        xy = [(gx + radius * math.cos(i * math.tau / 48),
+               gy + radius * math.sin(i * math.tau / 48)) for i in range(49)]
+        xy += [(gx - 0.1, gy), (gx + 0.1, gy), (gx, gy - 0.1), (gx, gy + 0.1)]
+        heights = [0.0] * len(xy) if height_at is None else height_at(xy)
+        points = [(x, y, float(z) + 0.035) for (x, y), z in zip(xy, heights)]
+        return list(zip(points[:48], points[1:49])) + [(points[49], points[50]), (points[51], points[52])]
 
     @staticmethod
     def _points(name, color, radius):
@@ -47,7 +65,7 @@ class PillarDemoVisualizer:
             marker.visualize(translations=points)
 
     def update_fdm_scan(self, invalid=None):
-        # These solid pillars have no overhangs: the FDM's door correction keeps
+        # These solid terrain obstacles have no overhangs: the door correction keeps
         # the same surface hits. Preserve the planning-time snapshot in world coordinates.
         valid = None if invalid is None else ~torch.flip(invalid[0, 0], dims=[0]).flatten()
         self._show_points(self.blue, self.env.scene["fdm_height_scanner"].data.ray_hits_w[0], 0.008, valid)
@@ -75,13 +93,8 @@ class PillarDemoVisualizer:
             starts.append(tuple(a)); ends.append(tuple(b))
             colors.append(color); widths.append(width)
 
-        gx, gy = self.goal
-        ring = [(gx + self.arrival_radius * math.cos(i * math.tau / 48),
-                 gy + self.arrival_radius * math.sin(i * math.tau / 48), 0.035) for i in range(49)]
-        for a, b in zip(ring, ring[1:]):
+        for a, b in self.goal_segments:
             line(a, b, (1.0, 0.85, 0.0, 1.0))
-        line((gx - 0.1, gy, 0.035), (gx + 0.1, gy, 0.035), (1.0, 0.85, 0.0, 1.0))
-        line((gx, gy - 0.1, 0.035), (gx, gy + 0.1, 0.035), (1.0, 0.85, 0.0, 1.0))
 
         wz = float(command[0, 2])
         if abs(wz) > 1e-3:

@@ -4,6 +4,19 @@ import gymnasium as gym
 
 
 gym.register(
+    id="Unitree-G1-29dof-FDM-Atlas",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.atlas_env_cfg:AtlasEnvCfg",
+        "rsl_rl_cfg_entry_point": (
+            "unitree_rl_lab.tasks.locomotion.agents.rsl_rl_perception_predict_cfg:UnitreePerceptionPredictRunnerCfg"
+        ),
+    },
+)
+
+
+gym.register(
     id="Unitree-G1-29dof-FDM-Mixed-Pillars",
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     disable_env_checker=True,

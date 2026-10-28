@@ -17,6 +17,7 @@ from .custom_terrain import (
     HfVariableInvertedPyramidStairsTerrainCfg,
     HfVariablePyramidStairsTerrainCfg,
     MeshMixedPillarsTerrainCfg,
+    MeshFDMAtlasTerrainCfg,
 )
 
 
@@ -30,6 +31,20 @@ MIXED_PILLARS_TERRAIN = terrain_gen.TerrainGeneratorCfg(
     use_cache=False,
     color_scheme="none",
     sub_terrains={"mixed_pillars": MeshMixedPillarsTerrainCfg(proportion=1.0)},
+)
+
+FDM_ATLAS_TERRAIN = terrain_gen.TerrainGeneratorCfg(
+    seed=0,
+    size=(48.0, 36.0),
+    num_rows=1,
+    num_cols=1,
+    border_width=0.0,
+    curriculum=False,
+    use_cache=False,
+    color_scheme="none",
+    # One composite sub-terrain contains the 4 x 3 joined zones. Keeping it in
+    # one mesh preserves world coordinates and avoids twelve overlapping floors.
+    sub_terrains={"fdm_atlas": MeshFDMAtlasTerrainCfg(proportion=1.0)},
 )
 
 
